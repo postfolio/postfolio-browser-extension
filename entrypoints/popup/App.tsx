@@ -65,6 +65,13 @@ const App: React.FC = () => {
                   initialThumbnail = imagesFromContentScript.firstSignificantImage;
                 }
                 console.log('Received images from content script:', imagesFromContentScript, 'Selected:', initialThumbnail);
+                
+                // Convert relative URLs to absolute URLs
+                if (initialThumbnail && !initialThumbnail.startsWith('http') && !initialThumbnail.startsWith('data:')) {
+                  const baseUrl = new URL(tab.url).origin;
+                  initialThumbnail = baseUrl + (initialThumbnail.startsWith('/') ? initialThumbnail : '/' + initialThumbnail);
+                  console.log('Converted relative URL to absolute:', initialThumbnail);
+                }
               } else {
                 console.log('No significant images found by content script.');
               }
@@ -84,15 +91,15 @@ const App: React.FC = () => {
           });
 
           // Fallback to mock thumbnail if, after all initial loads, thumbnail is still null
-          setTimeout(() => {
-            setContentData(prev => {
-              if (prev.thumbnail === null) {
-                const mockThumbnail = generateMockThumbnail("Auto-detected from page");
-                return { ...prev, thumbnail: mockThumbnail };
-              }
-              return prev;
-            });
-          }, 500); // Delay to allow other processes (like pending capture) to potentially set thumbnail
+          // setTimeout(() => {
+          //   setContentData(prev => {
+          //     if (prev.thumbnail === null) {
+          //       const mockThumbnail = generateMockThumbnail("Auto-detected from page");
+          //       return { ...prev, thumbnail: mockThumbnail };
+          //     }
+          //     return prev;
+          //   });
+          // }, 500); // Delay to allow other processes (like pending capture) to potentially set thumbnail
         } else {
           console.warn('Could not get tab details for content detection.');
           setContentData({
@@ -130,7 +137,11 @@ const App: React.FC = () => {
     };
 
     detectPageContent();
-    checkForPendingCapture();
+    
+    // Add a delay before checking for pending captures to give background script time to store
+    setTimeout(() => {
+      checkForPendingCapture();
+    }, 200);
     
     // Listen for messages from background script
     const messageListener = (message: any) => {
@@ -164,7 +175,7 @@ const App: React.FC = () => {
 
   const checkForPendingCapture = async () => {
     try {
-      console.log('Checking for pending area capture...');
+      console.log('[Popup] Checking for pending area capture...');
       const result = await chrome.storage.local.get(['pendingAreaCapture', 'pendingAreaError']);
       
       // Check for pending error first
@@ -173,11 +184,12 @@ const App: React.FC = () => {
         const now = Date.now();
         
         if (now - timestamp < 30000) {
-          console.log('Found pending area error:', error);
+          console.log('[Popup] Found pending area error:', error);
           showToastMessage('Failed to capture area: ' + error);
           await chrome.storage.local.remove('pendingAreaError');
           return;
         } else {
+          console.log('[Popup] Pending area error is too old, removing...');
           await chrome.storage.local.remove('pendingAreaError');
         }
       }
@@ -189,21 +201,23 @@ const App: React.FC = () => {
         
         // Only use captures from the last 30 seconds to avoid stale data
         if (now - timestamp < 30000) {
-          console.log('Found pending area capture, applying to thumbnail...');
+          console.log('[Popup] Found pending area capture, applying to thumbnail...');
+          console.log('[Popup] Capture timestamp:', timestamp, 'Current time:', now, 'Age:', now - timestamp, 'ms');
           setContentData(prev => ({ ...prev, thumbnail: dataUrl }));
           showToastMessage('Area captured successfully');
           
           // Clear the pending capture
           await chrome.storage.local.remove('pendingAreaCapture');
+          console.log('[Popup] Pending capture applied and cleared from storage');
         } else {
-          console.log('Pending capture is too old, ignoring...');
+          console.log('[Popup] Pending capture is too old, ignoring and removing...', 'Age:', now - timestamp, 'ms');
           await chrome.storage.local.remove('pendingAreaCapture');
         }
       } else {
-        console.log('No pending area capture found');
+        console.log('[Popup] No pending area capture found in storage');
       }
     } catch (error) {
-      console.error('Error checking for pending capture:', error);
+      console.error('[Popup] Error checking for pending capture:', error);
     }
   };
 
@@ -303,23 +317,25 @@ const App: React.FC = () => {
         throw new Error('No active tab found');
       }
 
-      // First try to inject the content script if it's not already there
-      try {
-        console.log('Injecting content script...');
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          files: ['content-scripts/area-selector.js']
-        });
-        console.log('Content script injected successfully');
-      } catch (injectionError) {
-        console.log('Content script might already be injected:', injectionError);
-        // Content script might already be injected, continue
-      }
+      // The content script area-selector.content.ts is configured for auto-injection via defineContentScript.
+      // Programmatic injection here is redundant and likely causing it to load twice.
+      // try {
+      //   console.log('Injecting content script...');
+      //   await chrome.scripting.executeScript({
+      //     target: { tabId: tab.id },
+      //     files: ['content-scripts/area-selector.js']
+      //   });
+      //   console.log('Content script injected successfully');
+      // } catch (injectionError) {
+      //   console.log('Content script might already be injected:', injectionError);
+      //   // Content script might already be injected, continue
+      // }
 
-      // Wait a bit for the script to initialize
+      // Wait a bit for the script to initialize if it was auto-injected.
+      // This delay might still be useful to ensure the auto-injected script is ready.
       await new Promise(resolve => setTimeout(resolve, 100));
 
-      console.log('Sending message to tab:', tab.id);
+      console.log('Sending message to tab to start area selection:', tab.id);
       
       // Send message to content script to start area selection
       const response = await chrome.tabs.sendMessage(tab.id, { action: 'startAreaSelection' });
@@ -419,7 +435,21 @@ const App: React.FC = () => {
           <div className="thumbnail-container">
             {contentData.thumbnail ? (
               <>
-                <img className="thumbnail-image" src={contentData.thumbnail} alt="Thumbnail" />
+                <img 
+                  className="thumbnail-image" 
+                  src={contentData.thumbnail} 
+                  alt="Thumbnail"
+                  onError={(e) => {
+                    console.error('Thumbnail image failed to load:', contentData.thumbnail);
+                    console.error('Image error event:', e);
+                    // Set thumbnail to null to show placeholder instead of broken image
+                    setContentData(prev => ({ ...prev, thumbnail: null }));
+                    showToastMessage('Failed to load thumbnail image');
+                  }}
+                  onLoad={() => {
+                    console.log('Thumbnail image loaded successfully:', contentData.thumbnail);
+                  }}
+                />
                 <div className="thumbnail-overlay">
                   <button className="thumbnail-change-btn" onClick={removeImage}>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

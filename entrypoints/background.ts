@@ -18,22 +18,33 @@ export default defineBackground(() => {
 
   // Handle messages from content scripts and popup
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.action === 'captureArea') {
+    console.log('[Background] Received message:', message, 'from sender:', sender);
+    
+    if (message.action === 'ping') {
+      console.log('[Background] Ping received, responding with pong');
+      sendResponse({ status: 'pong', timestamp: Date.now() });
+      return true;
+    } else if (message.action === 'captureArea') {
+      console.log('[Background] Processing captureArea request with rect:', message.rect);
       handleAreaCapture(message.rect, message.devicePixelRatio, sender.tab?.id);
+      sendResponse({ status: 'processing', message: 'Area capture initiated' });
+      return true; // Indicate we will send a response
     } else if (message.action === 'areaSelectionError') {
+      console.log('[Background] Forwarding areaSelectionError:', message.error);
       // Forward error to popup if it's open
       chrome.runtime.sendMessage({
         action: 'areaSelectionError',
         error: message.error
       }).catch(() => {
-        // Popup might be closed, ignore error
+        console.log('[Background] Could not forward error to popup (popup likely closed)');
       });
     } else if (message.action === 'areaSelectionCancelled') {
+      console.log('[Background] Forwarding areaSelectionCancelled');
       // Forward cancellation to popup if it's open
       chrome.runtime.sendMessage({
         action: 'areaSelectionCancelled'
       }).catch(() => {
-        // Popup might be closed, ignore error
+        console.log('[Background] Could not forward cancellation to popup (popup likely closed)');
       });
     }
     return true;
@@ -41,7 +52,7 @@ export default defineBackground(() => {
 
   async function handleAreaCapture(rect: any, devicePixelRatio: number, tabId?: number) {
     try {
-      console.log('handleAreaCapture called with:', { rect, devicePixelRatio, tabId });
+      console.log('[Background] handleAreaCapture called with:', { rect, devicePixelRatio, tabId });
       
       if (!tabId) {
         throw new Error('No tab ID available');
@@ -58,9 +69,11 @@ export default defineBackground(() => {
       }
 
       console.log('Tab captured successfully, data URL length:', dataUrl.length);
+      console.log('[Background] Tab captured successfully, data URL length:', dataUrl.length);
 
       // Use createImageBitmap instead of Image constructor (works in service workers)
       console.log('Converting data URL to blob for processing...');
+      console.log('[Background] Converting data URL to blob for processing...');
       
       // Convert data URL to blob first
       const response = await fetch(dataUrl);
@@ -69,6 +82,7 @@ export default defineBackground(() => {
       // Create ImageBitmap from the blob
       const imageBitmap = await createImageBitmap(fullImageBlob);
       console.log('ImageBitmap created:', imageBitmap.width, 'x', imageBitmap.height);
+      console.log('[Background] ImageBitmap created:', imageBitmap.width, 'x', imageBitmap.height);
 
       // Create a canvas to crop the image
       const canvas = new OffscreenCanvas(rect.width, rect.height);
@@ -79,6 +93,7 @@ export default defineBackground(() => {
       }
 
       console.log('Canvas created:', rect.width, 'x', rect.height);
+      console.log('[Background] Canvas created:', rect.width, 'x', rect.height);
 
       console.log('Drawing cropped area:', {
         sourceX: rect.x,
@@ -90,6 +105,7 @@ export default defineBackground(() => {
         destWidth: rect.width,
         destHeight: rect.height
       });
+      console.log('[Background] Drawing cropped area from rect:', rect);
 
       // Draw the cropped area using ImageBitmap
       ctx.drawImage(
@@ -99,10 +115,12 @@ export default defineBackground(() => {
       );
 
       console.log('Image drawn to canvas, converting to blob...');
+      console.log('[Background] Image drawn to canvas, converting to blob...');
 
       // Convert to blob and then to data URL
       const blob = await canvas.convertToBlob({ type: 'image/png' });
       console.log('Blob created, size:', blob.size);
+      console.log('[Background] Blob created, size:', blob.size);
       
       // Convert blob to data URL
       const reader = new FileReader();
@@ -110,6 +128,7 @@ export default defineBackground(() => {
       reader.onload = async () => {
         const croppedDataUrl = reader.result as string;
         console.log('Cropped data URL created, length:', croppedDataUrl.length);
+        console.log('[Background] Cropped data URL created, length:', croppedDataUrl.length);
         
         // Store the captured image in chrome storage for later retrieval
         await chrome.storage.local.set({
@@ -119,22 +138,26 @@ export default defineBackground(() => {
           }
         });
         console.log('Stored captured area in chrome.storage.local');
+        console.log('[Background] Stored captured area in chrome.storage.local');
         
         // Try to send message to popup (might be closed)
+        console.log('[Background] Attempting to send areaSelectionComplete message to popup...');
         chrome.runtime.sendMessage({
           action: 'areaSelectionComplete',
           dataUrl: croppedDataUrl
         }).catch(async (error) => {
           console.log('Failed to send message to popup (popup is closed):', error);
+          console.log('[Background] Failed to send message to popup (popup is closed):', error);
           
           // Popup is closed, so open it automatically to show the result
           try {
-            console.log('Opening popup to show captured area...');
+            console.log('[Background] Opening popup to show captured area...');
             // Small delay to ensure everything is ready
-            await new Promise(resolve => setTimeout(resolve, 500));
+            await new Promise(resolve => setTimeout(resolve, 1000));
             await chrome.action.openPopup();
           } catch (popupError) {
             console.log('Failed to open popup automatically:', popupError);
+            console.log('[Background] Failed to open popup automatically:', popupError);
             // Fallback: show a notification
             chrome.notifications.create({
               type: 'basic',
@@ -148,6 +171,7 @@ export default defineBackground(() => {
       
       reader.onerror = (error) => {
         console.error('FileReader error:', error);
+        console.error('[Background] FileReader error:', error);
         throw new Error('Failed to convert blob to data URL');
       };
       
@@ -158,6 +182,7 @@ export default defineBackground(() => {
 
     } catch (error) {
       console.error('Error in handleAreaCapture:', error);
+      console.error('[Background] Error in handleAreaCapture:', error);
       
       // Store error in storage as well
       await chrome.storage.local.set({

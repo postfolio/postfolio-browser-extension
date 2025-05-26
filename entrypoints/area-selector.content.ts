@@ -1,7 +1,8 @@
 export default defineContentScript({
   matches: ['<all_urls>'],
+  allFrames: true,
   main() {
-    console.log('Area selector content script loaded');
+    console.log('[AreaSelector] Content script loaded for URL:', window.location.href);
     
     let isSelecting = false;
     let startX = 0;
@@ -11,10 +12,17 @@ export default defineContentScript({
 
     // Listen for messages from popup
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      console.log('Content script received message:', message);
+      console.log('[AreaSelector] Content script received message:', message);
       
       if (message.action === 'startAreaSelection') {
-        console.log('Starting area selection...');
+        console.log('[AreaSelector] Received startAreaSelection action.');
+        // Ensure this only runs in the top-most frame to avoid multiple overlays/handlers
+        if (window.self !== window.top) {
+          console.log('[AreaSelector] In an iframe, ignoring startAreaSelection message.');
+          sendResponse({ success: false, reason: 'Cannot start selection in iframe directly' });
+          return true; // Indicate async response, though not strictly needed here
+        }
+        console.log('[AreaSelector] Attempting to start area selection in top frame...');
         startAreaSelection();
         sendResponse({ success: true });
       } else if (message.action === 'extractPageImages') {
@@ -89,8 +97,12 @@ export default defineContentScript({
     });
 
     function startAreaSelection() {
-      if (isSelecting) return;
+      if (isSelecting) {
+        console.log('[AreaSelector] Already selecting, ignoring call to startAreaSelection.');
+        return;
+      }
       
+      console.log('[AreaSelector] Executing startAreaSelection function.');
       isSelecting = true;
       createOverlay();
       document.addEventListener('mousedown', onMouseDown);
@@ -100,6 +112,7 @@ export default defineContentScript({
     }
 
     function createOverlay() {
+      console.log('[AreaSelector] Creating overlay and selection box...');
       // Create overlay
       overlay = document.createElement('div');
       overlay.style.cssText = `
@@ -205,50 +218,58 @@ export default defineContentScript({
 
     async function captureSelectedArea(rect: DOMRect) {
       try {
-        console.log('captureSelectedArea called with rect:', rect);
+        console.log('captureSelectedArea called with local rect:', rect);
         
-        // Hide overlay temporarily for clean capture
         if (overlay) {
           overlay.style.display = 'none';
         }
-
-        // Wait a bit for overlay to hide
         await new Promise(resolve => setTimeout(resolve, 100));
 
-        // Get the device pixel ratio for high-DPI displays
         const devicePixelRatio = window.devicePixelRatio || 1;
         console.log('Device pixel ratio:', devicePixelRatio);
         
-        // Calculate actual coordinates accounting for device pixel ratio
-        const captureRect = {
-          x: Math.round(rect.left * devicePixelRatio),
-          y: Math.round(rect.top * devicePixelRatio),
+        // The rect.x and rect.y are from getBoundingClientRect() of the selectionBox,
+        // which is relative to the viewport of the frame where this script runs.
+        // Since startAreaSelection is guarded by (window.top === window.self),
+        // this script instance is running in the top frame, so rect.x/y are already main-page relative.
+        const captureParams = {
+          x: Math.round(rect.x * devicePixelRatio),
+          y: Math.round(rect.y * devicePixelRatio),
           width: Math.round(rect.width * devicePixelRatio),
           height: Math.round(rect.height * devicePixelRatio)
         };
 
-        console.log('Calculated capture rect:', captureRect);
-        console.log('Original rect:', {
-          left: rect.left,
-          top: rect.top,
-          width: rect.width,
-          height: rect.height
-        });
-
-        // Send capture request to background script
-        console.log('Sending capture request to background script...');
-        chrome.runtime.sendMessage({
-          action: 'captureArea',
-          rect: captureRect,
-          devicePixelRatio: devicePixelRatio
-        });
+        console.log('[AreaSelector] Calculated capture params for background script:', captureParams);
+        
+        // First, test if background script is reachable
+        try {
+          console.log('[AreaSelector] Testing background script connectivity...');
+          const testResponse = await chrome.runtime.sendMessage({ action: 'ping' });
+          console.log('[AreaSelector] Background script ping response:', testResponse);
+        } catch (pingError) {
+          console.error('[AreaSelector] Background script ping failed:', pingError);
+        }
+        
+        try {
+          const response = await chrome.runtime.sendMessage({
+            action: 'captureArea',
+            rect: captureParams,
+            devicePixelRatio: devicePixelRatio
+          });
+          console.log('[AreaSelector] Message sent to background script successfully, response:', response);
+        } catch (messageError) {
+          console.error('[AreaSelector] Failed to send message to background script:', messageError);
+          throw new Error('Failed to communicate with background script: ' + (messageError instanceof Error ? messageError.message : 'Unknown error'));
+        }
 
       } catch (error) {
         console.error('Error capturing area:', error);
+        console.error('[AreaSelector] Error in captureSelectedArea:', error);
         chrome.runtime.sendMessage({ 
           action: 'areaSelectionError', 
           error: error instanceof Error ? error.message : 'Unknown error occurred'
         });
+        console.log('[AreaSelector] Error message sent to background script');
       } finally {
         cleanup();
       }
