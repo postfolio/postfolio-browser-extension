@@ -2,6 +2,17 @@ import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 import { ContentData } from './types';
 
+// Helper function to extract YouTube video ID from URL
+const getYoutubeVideoId = (url: string): string | null => {
+  if (!url) return null;
+  const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+  const match = url.match(regExp);
+  if (match && match[2] && match[2].length === 11) {
+    return match[2];
+  }
+  return null;
+};
+
 const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [loadingText, setLoadingText] = useState('Processing...');
@@ -20,35 +31,179 @@ const App: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    detectPageContent();
-  }, []);
+    const detectPageContent = async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        
+        if (tab && tab.id && tab.url && tab.title) {
+          let initialThumbnail: string | null = null;
+          const videoId = getYoutubeVideoId(tab.url);
 
-  const detectPageContent = async () => {
-    try {
-      // Get current tab information
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      
-      if (tab && tab.url && tab.title) {
+          if (videoId) {
+            initialThumbnail = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
+          } else if (tab.id && tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('file://')) {
+            // Try to get og:image or first significant image from content script
+            try {
+              // Ensure content script is available. WXT auto-injects based on entrypoint definition.
+              // No explicit injection needed here if area-selector.content.ts is correctly configured.
+              console.log('Attempting to fetch generic image from content script for tab:', tab.id);
+              const imagesFromContentScript = await chrome.tabs.sendMessage(tab.id, { action: 'extractPageImages' });
+              
+              if (imagesFromContentScript) {
+                // Prioritize image sources
+                if (imagesFromContentScript.ogImage) {
+                  initialThumbnail = imagesFromContentScript.ogImage;
+                } else if (imagesFromContentScript.jsonLdImage) {
+                  initialThumbnail = imagesFromContentScript.jsonLdImage;
+                } else if (imagesFromContentScript.twitterImage) {
+                  initialThumbnail = imagesFromContentScript.twitterImage;
+                } else if (imagesFromContentScript.itempropImage) {
+                  initialThumbnail = imagesFromContentScript.itempropImage;
+                } else if (imagesFromContentScript.linkRelImage) {
+                  initialThumbnail = imagesFromContentScript.linkRelImage;
+                } else if (imagesFromContentScript.firstSignificantImage) {
+                  initialThumbnail = imagesFromContentScript.firstSignificantImage;
+                }
+                console.log('Received images from content script:', imagesFromContentScript, 'Selected:', initialThumbnail);
+              } else {
+                console.log('No significant images found by content script.');
+              }
+            } catch (err: any) {
+              console.warn('Failed to communicate with content script for image extraction or no images found:', err.message);
+              if (err.message && (err.message.includes('Receiving end does not exist') || err.message.includes('cannot be scripted'))) {
+                console.log('Content script not available or not allowed on this page.');
+              }
+              // Fall through, initialThumbnail remains as is (null or YT thumbnail if that was tried first)
+            }
+          }
+
+          setContentData({
+            title: tab.title,
+            url: tab.url,
+            thumbnail: initialThumbnail // This will be null if no image found, or URL string
+          });
+
+          // Fallback to mock thumbnail if, after all initial loads, thumbnail is still null
+          setTimeout(() => {
+            setContentData(prev => {
+              if (prev.thumbnail === null) {
+                const mockThumbnail = generateMockThumbnail("Auto-detected from page");
+                return { ...prev, thumbnail: mockThumbnail };
+              }
+              return prev;
+            });
+          }, 500); // Delay to allow other processes (like pending capture) to potentially set thumbnail
+        } else {
+          console.warn('Could not get tab details for content detection.');
+          setContentData({
+            title: 'Unable to detect title',
+            url: '',
+            thumbnail: null
+          });
+          setTimeout(() => {
+            setContentData(prev => {
+              if (prev.thumbnail === null) {
+                const mockThumbnail = generateMockThumbnail("No page content detected");
+                return { ...prev, thumbnail: mockThumbnail };
+              }
+              return prev;
+            });
+          }, 500);
+        }
+      } catch (error: any) {
+        console.error('Error detecting page content:', error.message);
         setContentData({
-          title: tab.title,
-          url: tab.url,
+          title: "Error detecting title",
+          url: "",
           thumbnail: null
         });
-
-        // Try to get favicon or page screenshot
         setTimeout(() => {
-          const mockThumbnail = generateMockThumbnail("Auto-detected from page");
-          setContentData(prev => ({ ...prev, thumbnail: mockThumbnail }));
-        }, 1000);
+          setContentData(prev => {
+            if (prev.thumbnail === null) {
+              const mockThumbnail = generateMockThumbnail("Detection error");
+              return { ...prev, thumbnail: mockThumbnail };
+            }
+            return prev;
+          });
+        }, 500);
+      }
+    };
+
+    detectPageContent();
+    checkForPendingCapture();
+    
+    // Listen for messages from background script
+    const messageListener = (message: any) => {
+      console.log('Popup received message:', message);
+      
+      if (message.action === 'areaSelectionComplete') {
+        console.log('Area selection completed, setting thumbnail...');
+        setContentData(prev => ({ ...prev, thumbnail: message.dataUrl }));
+        showToastMessage('Area captured successfully');
+        setActiveControl(null);
+        hideLoadingState();
+      } else if (message.action === 'areaSelectionError') {
+        console.log('Area selection error:', message.error);
+        showToastMessage('Failed to capture area: ' + message.error);
+        setActiveControl(null);
+        hideLoadingState();
+      } else if (message.action === 'areaSelectionCancelled') {
+        console.log('Area selection cancelled');
+        showToastMessage('Area selection cancelled');
+        setActiveControl(null);
+        hideLoadingState();
+      }
+    };
+
+    chrome.runtime.onMessage.addListener(messageListener);
+    
+    return () => {
+      chrome.runtime.onMessage.removeListener(messageListener);
+    };
+  }, []);
+
+  const checkForPendingCapture = async () => {
+    try {
+      console.log('Checking for pending area capture...');
+      const result = await chrome.storage.local.get(['pendingAreaCapture', 'pendingAreaError']);
+      
+      // Check for pending error first
+      if (result.pendingAreaError) {
+        const { error, timestamp } = result.pendingAreaError;
+        const now = Date.now();
+        
+        if (now - timestamp < 30000) {
+          console.log('Found pending area error:', error);
+          showToastMessage('Failed to capture area: ' + error);
+          await chrome.storage.local.remove('pendingAreaError');
+          return;
+        } else {
+          await chrome.storage.local.remove('pendingAreaError');
+        }
+      }
+      
+      // Check for pending capture
+      if (result.pendingAreaCapture) {
+        const { dataUrl, timestamp } = result.pendingAreaCapture;
+        const now = Date.now();
+        
+        // Only use captures from the last 30 seconds to avoid stale data
+        if (now - timestamp < 30000) {
+          console.log('Found pending area capture, applying to thumbnail...');
+          setContentData(prev => ({ ...prev, thumbnail: dataUrl }));
+          showToastMessage('Area captured successfully');
+          
+          // Clear the pending capture
+          await chrome.storage.local.remove('pendingAreaCapture');
+        } else {
+          console.log('Pending capture is too old, ignoring...');
+          await chrome.storage.local.remove('pendingAreaCapture');
+        }
+      } else {
+        console.log('No pending area capture found');
       }
     } catch (error) {
-      console.error('Error detecting page content:', error);
-      // Fallback data for testing
-      setContentData({
-        title: "Amazing Tutorial - How to Build Extensions",
-        url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-        thumbnail: null
-      });
+      console.error('Error checking for pending capture:', error);
     }
   };
 
@@ -135,14 +290,50 @@ const App: React.FC = () => {
     }
   };
 
-  const selectArea = () => {
+  const selectArea = async () => {
     setActiveControl('select');
-    showToastMessage('Area selection mode activated');
-    // In a real implementation, this would open area selection UI
-    setTimeout(() => {
-      const mockThumbnail = generateMockThumbnail("Area selected");
-      setContentData(prev => ({ ...prev, thumbnail: mockThumbnail }));
-    }, 1000);
+    showLoadingState('Preparing area selection...');
+    
+    try {
+      // Get current tab
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      console.log('Current tab:', tab);
+      
+      if (!tab.id) {
+        throw new Error('No active tab found');
+      }
+
+      // First try to inject the content script if it's not already there
+      try {
+        console.log('Injecting content script...');
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['content-scripts/area-selector.js']
+        });
+        console.log('Content script injected successfully');
+      } catch (injectionError) {
+        console.log('Content script might already be injected:', injectionError);
+        // Content script might already be injected, continue
+      }
+
+      // Wait a bit for the script to initialize
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      console.log('Sending message to tab:', tab.id);
+      
+      // Send message to content script to start area selection
+      const response = await chrome.tabs.sendMessage(tab.id, { action: 'startAreaSelection' });
+      console.log('Response from content script:', response);
+      
+      // Close popup to allow area selection
+      window.close();
+      
+    } catch (error) {
+      console.error('Error starting area selection:', error);
+      showToastMessage('Failed to start area selection: ' + (error instanceof Error ? error.message : 'Unknown error'));
+      setActiveControl(null);
+      hideLoadingState();
+    }
   };
 
   const removeImage = () => {

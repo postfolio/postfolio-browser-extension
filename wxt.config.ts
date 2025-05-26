@@ -10,7 +10,9 @@ export default defineConfig({
       "activeTab",
       "tabs",
       "storage",
-      "contextMenus"
+      "contextMenus",
+      "scripting",
+      "notifications"
     ],
     action: {
       default_title: "Save to Postfolio",

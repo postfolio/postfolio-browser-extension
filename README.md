@@ -66,7 +66,7 @@ This creates a zip file in the `.output` directory ready for Chrome Web Store su
 ### Thumbnail Options
 
 - **Visible Area**: Captures the currently visible portion of the webpage
-- **Select Area**: Allows you to select a specific area to capture (future feature)
+- **Select Area**: Interactive area selection tool - click and drag to select any area of the page for capture
 - **Upload**: Upload your own image as thumbnail
 - **Remove**: Remove the thumbnail entirely
 
@@ -154,7 +154,7 @@ The extension automatically:
 
 ## Roadmap
 
-- [ ] Area selection tool for custom screenshots
+- [x] Area selection tool for custom screenshots
 - [ ] Multiple collection support
 - [ ] Keyboard shortcuts
 - [ ] Dark mode theme
