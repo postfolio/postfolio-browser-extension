@@ -46,6 +46,72 @@ export default defineBackground(() => {
       }).catch(() => {
         console.log('[Background] Could not forward cancellation to popup (popup likely closed)');
       });
+    } else if (message.action === 'getAuthDetails') {
+      console.log('[Background] Received getAuthDetails request from popup.');
+      
+      // First check active tab, then search all tabs for Postfolio
+      chrome.tabs.query({ active: true, currentWindow: true }, (activeTabs) => {
+        const activeTab = activeTabs[0];
+        console.log('[Background] Active tab found:', activeTab ? { id: activeTab.id, url: activeTab.url, title: activeTab.title } : 'No tab');
+        
+        const isPostfolioTab = (tab: chrome.tabs.Tab) => {
+          return tab.url && (
+            tab.url.startsWith('http://localhost:3001') || 
+            tab.url.startsWith('https://localhost:3001') ||
+            tab.url.startsWith('https://www.mypostfolio.com') || 
+            tab.url.startsWith('https://mypostfolio.com')
+          );
+        };
+        
+        // Check if active tab is Postfolio
+        if (activeTab && activeTab.id && isPostfolioTab(activeTab)) {
+          console.log('[Background] Active tab is Postfolio, sending message to auth bridge content script on tab:', activeTab.id);
+          chrome.tabs.sendMessage(activeTab.id, { action: 'getFirebaseAuthTokenFromPage' })
+            .then(response => {
+              if (response && response.success) {
+                console.log('[Background] Auth details received from content script:', { userId: response.userId, tokenPresent: !!response.token, userEmail: response.userEmail });
+                sendResponse({ success: true, token: response.token, userId: response.userId, userEmail: response.userEmail });
+              } else {
+                console.error('[Background] Failed to get auth details from content script:', response?.error);
+                sendResponse({ success: false, error: response?.error || 'Failed to get auth token from page. Is Postfolio open and logged in?' });
+              }
+            })
+            .catch(err => {
+              console.error('[Background] Error sending message to content script or content script error:', err);
+              sendResponse({ success: false, error: 'Error communicating with Postfolio page. Ensure it is open and you are logged in. ' + err.message });
+            });
+        } else {
+          // Active tab is not Postfolio, search all tabs
+          console.log('[Background] Active tab is not Postfolio, searching all tabs...');
+          chrome.tabs.query({}, (allTabs) => {
+            const postfolioTabs = allTabs.filter(tab => tab.id && isPostfolioTab(tab));
+            console.log('[Background] Found Postfolio tabs:', postfolioTabs.map(tab => ({ id: tab.id, url: tab.url })));
+            
+            if (postfolioTabs.length > 0) {
+              const postfolioTab = postfolioTabs[0]; // Use the first one found
+              console.log('[Background] Using Postfolio tab:', postfolioTab.id, postfolioTab.url);
+              chrome.tabs.sendMessage(postfolioTab.id!, { action: 'getFirebaseAuthTokenFromPage' })
+                .then(response => {
+                  if (response && response.success) {
+                    console.log('[Background] Auth details received from content script:', { userId: response.userId, tokenPresent: !!response.token, userEmail: response.userEmail });
+                    sendResponse({ success: true, token: response.token, userId: response.userId, userEmail: response.userEmail });
+                  } else {
+                    console.error('[Background] Failed to get auth details from content script:', response?.error);
+                    sendResponse({ success: false, error: response?.error || 'Failed to get auth token from page. Is Postfolio open and logged in?' });
+                  }
+                })
+                .catch(err => {
+                  console.error('[Background] Error sending message to content script or content script error:', err);
+                  sendResponse({ success: false, error: 'Error communicating with Postfolio page. Ensure it is open and you are logged in. ' + err.message });
+                });
+            } else {
+              console.warn('[Background] No Postfolio tabs found. Active tab URL:', activeTab?.url);
+              sendResponse({ success: false, error: 'Postfolio tab not found. Please open http://localhost:3001 and log in.' });
+            }
+          });
+        }
+      });
+      return true; // Indicates asynchronous response
     }
     return true;
   });

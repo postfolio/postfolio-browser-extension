@@ -14,6 +14,12 @@ export default defineContentScript({
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       console.log('[AreaSelector] Content script received message:', message);
       
+      // Ignore auth-related messages - let the auth bridge handle them
+      if (message.action === 'getFirebaseAuthTokenFromPage') {
+        console.log('[AreaSelector] Ignoring auth message, should be handled by auth bridge');
+        return false; // Don't handle this message
+      }
+      
       if (message.action === 'startAreaSelection') {
         console.log('[AreaSelector] Received startAreaSelection action.');
         // Ensure this only runs in the top-most frame to avoid multiple overlays/handlers

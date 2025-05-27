@@ -13,6 +13,13 @@ const getYoutubeVideoId = (url: string): string | null => {
   return null;
 };
 
+interface AuthDetails {
+  userId: string | null;
+  token: string | null;
+  userEmail: string | null;
+  error?: string | null;
+}
+
 const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [loadingText, setLoadingText] = useState('Processing...');
@@ -25,12 +32,35 @@ const App: React.FC = () => {
     url: '',
     thumbnail: null
   });
+  const [authDetails, setAuthDetails] = useState<AuthDetails>({ userId: null, token: null, userEmail: null, error: null });
 
   const titleInputRef = useRef<HTMLTextAreaElement>(null);
   const urlInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    const fetchAuthDetails = async () => {
+      console.log('[Popup] Requesting auth details from background script...');
+      try {
+        const response = await chrome.runtime.sendMessage({ action: 'getAuthDetails' });
+        if (response && response.success) {
+          console.log('[Popup] Auth details received:', { userId: response.userId, tokenPresent: !!response.token, userEmail: response.userEmail });
+          setAuthDetails({ userId: response.userId, token: response.token, userEmail: response.userEmail, error: null });
+        } else {
+          console.error('[Popup] Failed to get auth details:', response?.error);
+          setAuthDetails({ userId: null, token: null, userEmail: null, error: response?.error || 'Could not retrieve login status. Please ensure you are logged into Postfolio in an active tab.' });
+          showToastMessage(response?.error || 'Login status not found. Ensure Postfolio is open & logged in.');
+        }
+      } catch (err: any) {
+        console.error('[Popup] Error fetching auth details:', err);
+        const errorMessage = 'Error connecting to Postfolio. Make sure it is open and you are logged in. (' + err.message + ')';
+        setAuthDetails({ userId: null, token: null, userEmail: null, error: errorMessage });
+        showToastMessage(errorMessage);
+      }
+    };
+
+    fetchAuthDetails();
+
     const detectPageContent = async () => {
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -252,18 +282,59 @@ const App: React.FC = () => {
   };
 
   const saveToPostfolio = async () => {
+    if (!authDetails.token || !authDetails.userId) {
+      showToastMessage(authDetails.error || 'Not logged in. Please log in to Postfolio and try again.');
+      setIsLoading(false);
+      return;
+    }
+
     showLoadingState('Saving to Postfolio...');
-    
-    // Simulate API call
-    setTimeout(() => {
-      hideLoadingState();
-      showToastMessage('Successfully saved to Postfolio!');
+
+    const postDataToSave = {
+      url: contentData.url,
+      title: contentData.title.trim(),
+      thumbnailUrl: contentData.thumbnail, // This can be a data URL or a direct image URL
+      userId: authDetails.userId,
+      // categoryId: null, // Optional: Add if you have category selection in the extension
+    };
+
+    console.log('[Popup] Attempting to save post:', postDataToSave);
+
+    try {
+      // Dynamic API endpoint based on environment
+      const isDevelopment = true; // Set to false for production build
+      const apiEndpoint = isDevelopment 
+        ? 'http://localhost:3001/api/posts' 
+        : 'https://www.mypostfolio.com/api/posts';
       
-      // Auto-close after success
-      setTimeout(() => {
-        window.close();
-      }, 2000);
-    }, 1800);
+      const response = await fetch(apiEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authDetails.token}`,
+        },
+        body: JSON.stringify(postDataToSave),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('[Popup] Post saved successfully:', result);
+        hideLoadingState();
+        showToastMessage('Successfully saved to Postfolio!');
+        setTimeout(() => {
+          window.close();
+        }, 2000);
+      } else {
+        const errorData = await response.json().catch(() => ({ error: 'Failed to save. Server error.' }));
+        console.error('[Popup] Error saving post:', response.status, errorData);
+        hideLoadingState();
+        showToastMessage(`Error: ${errorData.error || response.statusText || 'Could not save post.'}`);
+      }
+    } catch (error: any) {
+      console.error('[Popup] Network or other error saving post:', error);
+      hideLoadingState();
+      showToastMessage('Failed to save: ' + error.message);
+    }
   };
 
   const captureVisibleArea = async () => {
@@ -550,14 +621,19 @@ const App: React.FC = () => {
           <button 
             className="primary-action" 
             onClick={saveToPostfolio}
-            disabled={!contentData.title.trim()}
+            disabled={!contentData.title.trim() || !authDetails.token || !!authDetails.error}
           >
-            Save To Postfolio
+             {authDetails.error ? 'Login Error' : (authDetails.token ? 'Save To Postfolio' : 'Login to Save')}
           </button>
           
-          {!contentData.title.trim() && (
+          {(!contentData.title.trim() && authDetails.token) && (
             <div className="validation-hint">
               Please enter a title to continue
+            </div>
+          )}
+          {authDetails.error && (
+             <div className="validation-hint">
+              {authDetails.error}
             </div>
           )}
         </div>
