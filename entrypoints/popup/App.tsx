@@ -20,11 +20,26 @@ interface AuthDetails {
   error?: string | null;
 }
 
+const WEB_APP_BASE_URL = import.meta.env.DEV
+  ? 'http://localhost:3001'
+  : 'https://www.mypostfolio.com';
+const LOGIN_PAGE_PATH = '/login'; // Or your actual login path e.g. /auth
+
+// Toast state and function
+interface ToastDetails {
+  message: string;
+  type: 'success' | 'error' | 'warning';
+  show: boolean;
+}
+
 const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [loadingText, setLoadingText] = useState('Processing...');
-  const [showToast, setShowToast] = useState(false);
-  const [toastMessage, setToastMessage] = useState('');
+  const [toastDetails, setToastDetails] = useState<ToastDetails>({
+    message: '',
+    type: 'success',
+    show: false,
+  });
   const [activeControl, setActiveControl] = useState<string | null>(null);
   const [isUrlExpanded, setIsUrlExpanded] = useState(false);
   const [contentData, setContentData] = useState<ContentData>({
@@ -38,8 +53,75 @@ const App: React.FC = () => {
   const urlInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const isLoginError = (errMsg: string | undefined | null): boolean => {
+    if (!errMsg) return false;
+    const lowerMsg = errMsg.toLowerCase();
+    return lowerMsg.includes('not logged in') ||
+           lowerMsg.includes('login status not found') ||
+           lowerMsg.includes('ensure it is open and you are logged in') ||
+           lowerMsg.includes('postfolio tab not found') ||
+           lowerMsg.includes('could not retrieve login status');
+  };
+  
+  const getPreferredImage = (images: any, baseUrl: string): string | null => {
+    let preferredThumbnail = null;
+    if (images) {
+      if (images.ogImage) preferredThumbnail = images.ogImage;
+      else if (images.jsonLdImage) preferredThumbnail = images.jsonLdImage;
+      else if (images.twitterImage) preferredThumbnail = images.twitterImage;
+      else if (images.itempropImage) preferredThumbnail = images.itempropImage;
+      else if (images.linkRelImage) preferredThumbnail = images.linkRelImage;
+      else if (images.firstSignificantImage) preferredThumbnail = images.firstSignificantImage;
+      
+      if (preferredThumbnail && !preferredThumbnail.startsWith('http') && !preferredThumbnail.startsWith('data:')) {
+        try {
+          const base = new URL(baseUrl).origin;
+          preferredThumbnail = base + (preferredThumbnail.startsWith('/') ? preferredThumbnail : '/' + preferredThumbnail);
+        } catch (e) {
+          console.warn("Error constructing absolute URL for thumbnail:", e);
+          return null; // Invalid base URL
+        }
+      }
+    }
+    return preferredThumbnail;
+  };
+
+  const fetchContentDetailsForUrl = async (urlToFetch: string, currentTab?: chrome.tabs.Tab | null ) => {
+    if (!urlToFetch) {
+      setContentData(prev => ({ ...prev, title: 'No URL provided', thumbnail: null }));
+      return;
+    }
+
+    let newTitle = currentTab?.title || `Content from ${new URL(urlToFetch).hostname}`;
+    let newThumbnail: string | null = null;
+
+    const videoId = getYoutubeVideoId(urlToFetch);
+    if (videoId) {
+      newThumbnail = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
+    } else if (currentTab && currentTab.id && currentTab.url && currentTab.url === urlToFetch && !currentTab.url.startsWith('chrome://') && !currentTab.url.startsWith('file://')) {
+      try {
+        console.log('Attempting to fetch generic image from content script for tab:', currentTab.id);
+        const imagesFromContentScript = await chrome.tabs.sendMessage(currentTab.id, { action: 'extractPageImages' });
+        newThumbnail = getPreferredImage(imagesFromContentScript, currentTab.url);
+        console.log('Received images from content script:', imagesFromContentScript, 'Selected:', newThumbnail);
+      } catch (err: any) {
+        console.warn('Failed to communicate with content script for image extraction:', err.message);
+      }
+    }
+    
+    setContentData(prev => ({
+      ...prev,
+      url: urlToFetch,
+      title: newTitle,
+      thumbnail: newThumbnail
+    }));
+  };
+
+
   useEffect(() => {
-    const fetchAuthDetails = async () => {
+    const initialSetup = async () => {
+      console.log('[Popup] Initial setup running...');
+      // 1. Fetch Auth Details
       console.log('[Popup] Requesting auth details from background script...');
       try {
         const response = await chrome.runtime.sendMessage({ action: 'getAuthDetails' });
@@ -48,206 +130,139 @@ const App: React.FC = () => {
           setAuthDetails({ userId: response.userId, token: response.token, userEmail: response.userEmail, error: null });
         } else {
           console.error('[Popup] Failed to get auth details:', response?.error);
-          setAuthDetails({ userId: null, token: null, userEmail: null, error: response?.error || 'Could not retrieve login status. Please ensure you are logged into Postfolio in an active tab.' });
-          showToastMessage(response?.error || 'Login status not found. Ensure Postfolio is open & logged in.');
+          const errorMsg = response?.error || 'Could not retrieve login status. Please ensure you are logged into Postfolio in an active tab.';
+          setAuthDetails({ userId: null, token: null, userEmail: null, error: errorMsg });
+          showToastMessage(errorMsg, 'error'); // Display auth error as toast
         }
       } catch (err: any) {
         console.error('[Popup] Error fetching auth details:', err);
         const errorMessage = 'Error connecting to Postfolio. Make sure it is open and you are logged in. (' + err.message + ')';
         setAuthDetails({ userId: null, token: null, userEmail: null, error: errorMessage });
-        showToastMessage(errorMessage);
+        showToastMessage(errorMessage, 'error'); // Display connection error as toast
       }
-    };
 
-    fetchAuthDetails();
-
-    const detectPageContent = async () => {
+      // 2. Initial content detection
+      let activeTab: chrome.tabs.Tab | null = null;
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        
-        if (tab && tab.id && tab.url && tab.title) {
-          let initialThumbnail: string | null = null;
-          const videoId = getYoutubeVideoId(tab.url);
-
-          if (videoId) {
-            initialThumbnail = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
-          } else if (tab.id && tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('file://')) {
-            // Try to get og:image or first significant image from content script
-            try {
-              // Ensure content script is available. WXT auto-injects based on entrypoint definition.
-              // No explicit injection needed here if area-selector.content.ts is correctly configured.
-              console.log('Attempting to fetch generic image from content script for tab:', tab.id);
-              const imagesFromContentScript = await chrome.tabs.sendMessage(tab.id, { action: 'extractPageImages' });
-              
-              if (imagesFromContentScript) {
-                // Prioritize image sources
-                if (imagesFromContentScript.ogImage) {
-                  initialThumbnail = imagesFromContentScript.ogImage;
-                } else if (imagesFromContentScript.jsonLdImage) {
-                  initialThumbnail = imagesFromContentScript.jsonLdImage;
-                } else if (imagesFromContentScript.twitterImage) {
-                  initialThumbnail = imagesFromContentScript.twitterImage;
-                } else if (imagesFromContentScript.itempropImage) {
-                  initialThumbnail = imagesFromContentScript.itempropImage;
-                } else if (imagesFromContentScript.linkRelImage) {
-                  initialThumbnail = imagesFromContentScript.linkRelImage;
-                } else if (imagesFromContentScript.firstSignificantImage) {
-                  initialThumbnail = imagesFromContentScript.firstSignificantImage;
-                }
-                console.log('Received images from content script:', imagesFromContentScript, 'Selected:', initialThumbnail);
-                
-                // Convert relative URLs to absolute URLs
-                if (initialThumbnail && !initialThumbnail.startsWith('http') && !initialThumbnail.startsWith('data:')) {
-                  const baseUrl = new URL(tab.url).origin;
-                  initialThumbnail = baseUrl + (initialThumbnail.startsWith('/') ? initialThumbnail : '/' + initialThumbnail);
-                  console.log('Converted relative URL to absolute:', initialThumbnail);
-                }
-              } else {
-                console.log('No significant images found by content script.');
-              }
-            } catch (err: any) {
-              console.warn('Failed to communicate with content script for image extraction or no images found:', err.message);
-              if (err.message && (err.message.includes('Receiving end does not exist') || err.message.includes('cannot be scripted'))) {
-                console.log('Content script not available or not allowed on this page.');
-              }
-              // Fall through, initialThumbnail remains as is (null or YT thumbnail if that was tried first)
-            }
-          }
-
-          setContentData({
-            title: tab.title,
-            url: tab.url,
-            thumbnail: initialThumbnail // This will be null if no image found, or URL string
-          });
-
-          // Fallback to mock thumbnail if, after all initial loads, thumbnail is still null
-          // setTimeout(() => {
-          //   setContentData(prev => {
-          //     if (prev.thumbnail === null) {
-          //       const mockThumbnail = generateMockThumbnail("Auto-detected from page");
-          //       return { ...prev, thumbnail: mockThumbnail };
-          //     }
-          //     return prev;
-          //   });
-          // }, 500); // Delay to allow other processes (like pending capture) to potentially set thumbnail
-        } else {
-          console.warn('Could not get tab details for content detection.');
-          setContentData({
-            title: 'Unable to detect title',
-            url: '',
-            thumbnail: null
-          });
-          setTimeout(() => {
-            setContentData(prev => {
-              if (prev.thumbnail === null) {
-                const mockThumbnail = generateMockThumbnail("No page content detected");
-                return { ...prev, thumbnail: mockThumbnail };
-              }
-              return prev;
-            });
-          }, 500);
-        }
-      } catch (error: any) {
-        console.error('Error detecting page content:', error.message);
-        setContentData({
-          title: "Error detecting title",
-          url: "",
-          thumbnail: null
-        });
-        setTimeout(() => {
-          setContentData(prev => {
-            if (prev.thumbnail === null) {
-              const mockThumbnail = generateMockThumbnail("Detection error");
-              return { ...prev, thumbnail: mockThumbnail };
-            }
-            return prev;
-          });
-        }, 500);
+        if (tab) activeTab = tab;
+      } catch (e) {
+        console.warn('Could not get active tab details:', e);
       }
-    };
-
-    detectPageContent();
-    
-    // Add a delay before checking for pending captures to give background script time to store
-    setTimeout(() => {
-      checkForPendingCapture();
-    }, 200);
-    
-    // Listen for messages from background script
-    const messageListener = (message: any) => {
-      console.log('Popup received message:', message);
       
-      if (message.action === 'areaSelectionComplete') {
-        console.log('Area selection completed, setting thumbnail...');
-        setContentData(prev => ({ ...prev, thumbnail: message.dataUrl }));
-        showToastMessage('Area captured successfully');
-        setActiveControl(null);
-        hideLoadingState();
-      } else if (message.action === 'areaSelectionError') {
-        console.log('Area selection error:', message.error);
-        showToastMessage('Failed to capture area: ' + message.error);
-        setActiveControl(null);
-        hideLoadingState();
-      } else if (message.action === 'areaSelectionCancelled') {
-        console.log('Area selection cancelled');
-        showToastMessage('Area selection cancelled');
-        setActiveControl(null);
-        hideLoadingState();
+      const initialUrl = activeTab?.url || '';
+      const initialTitle = activeTab?.title || (initialUrl ? `Content from ${new URL(initialUrl).hostname}` : 'Unable to detect title');
+
+      setContentData({ title: initialTitle, url: initialUrl, thumbnail: null });
+
+      if (initialUrl) {
+        await fetchContentDetailsForUrl(initialUrl, activeTab);
+      } else {
+         setContentData(prev => ({ ...prev, thumbnail: generateMockThumbnail("No page content detected") }));
       }
+      
+      // Add a delay before checking for pending captures
+      setTimeout(() => {
+        checkForPendingCapture();
+      }, 200);
+      
+      // Listen for messages from background script
+      const messageListener = (message: any) => {
+        console.log('Popup received message:', message);
+        if (message.action === 'areaSelectionComplete') {
+          setContentData(prev => ({ ...prev, thumbnail: message.dataUrl }));
+          showToastMessage('Area captured successfully', 'success');
+          setActiveControl(null); hideLoadingState();
+        } else if (message.action === 'areaSelectionError') {
+          showToastMessage('Failed to capture area: ' + message.error, 'error');
+          setActiveControl(null); hideLoadingState();
+        } else if (message.action === 'areaSelectionCancelled') {
+          showToastMessage('Area selection cancelled', 'warning');
+          setActiveControl(null); hideLoadingState();
+        }
+      };
+      chrome.runtime.onMessage.addListener(messageListener);
+      return () => chrome.runtime.onMessage.removeListener(messageListener);
     };
 
-    chrome.runtime.onMessage.addListener(messageListener);
-    
-    return () => {
-      chrome.runtime.onMessage.removeListener(messageListener);
-    };
+    initialSetup();
   }, []);
+  
+  useEffect(() => {
+    // This effect runs when authDetails changes, especially after login.
+    if (authDetails.token && authDetails.userId) { // User is logged in
+      chrome.storage.local.get(['postfolioReturnToUrl'], async (result) => {
+        if (result.postfolioReturnToUrl) {
+          const savedUrl = result.postfolioReturnToUrl;
+          console.log('[Popup] Found returnToUrlAfterLogin:', savedUrl);
+          await chrome.storage.local.remove('postfolioReturnToUrl');
+
+          if (contentData.url !== savedUrl) {
+            console.log('[Popup] Current URL is different, restoring to saved URL and fetching details.');
+            // Query for the tab again, in case its title changed or to pass it to fetchContentDetailsForUrl
+            let restoredTab : chrome.tabs.Tab | null = null;
+            try {
+                const tabs = await chrome.tabs.query({url: savedUrl, currentWindow: true});
+                if (tabs && tabs.length > 0) restoredTab = tabs[0];
+                else { // If tab not found, maybe query for any active tab to get a base URL if needed
+                    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+                    if (activeTab) restoredTab = activeTab; // Use active tab as a fallback for context
+                }
+            } catch(e) { console.warn("Could not get tab for restored URL", e); }
+
+            setContentData(prev => ({
+              ...prev,
+              url: savedUrl,
+              title: restoredTab?.title || `Loading details for ${new URL(savedUrl).hostname}...`,
+              thumbnail: null,
+            }));
+            await fetchContentDetailsForUrl(savedUrl, restoredTab);
+          } else {
+            console.log('[Popup] Current URL matches saved URL, no restore action needed.');
+          }
+        }
+      });
+    }
+  }, [authDetails.token, authDetails.userId]); // Runs when login status changes
+
 
   const checkForPendingCapture = async () => {
     try {
       console.log('[Popup] Checking for pending area capture...');
       const result = await chrome.storage.local.get(['pendingAreaCapture', 'pendingAreaError']);
       
-      // Check for pending error first
       if (result.pendingAreaError) {
         const { error, timestamp } = result.pendingAreaError;
         const now = Date.now();
-        
-        if (now - timestamp < 30000) {
+        if (now - timestamp < 30000) { // Only show recent errors
           console.log('[Popup] Found pending area error:', error);
-          showToastMessage('Failed to capture area: ' + error);
+          showToastMessage('Failed to capture area: ' + error, 'error');
           await chrome.storage.local.remove('pendingAreaError');
-          return;
+          return; // Prioritize showing error over a potentially stale capture
         } else {
           console.log('[Popup] Pending area error is too old, removing...');
           await chrome.storage.local.remove('pendingAreaError');
         }
       }
       
-      // Check for pending capture
       if (result.pendingAreaCapture) {
         const { dataUrl, timestamp } = result.pendingAreaCapture;
         const now = Date.now();
-        
-        // Only use captures from the last 30 seconds to avoid stale data
         if (now - timestamp < 30000) {
           console.log('[Popup] Found pending area capture, applying to thumbnail...');
-          console.log('[Popup] Capture timestamp:', timestamp, 'Current time:', now, 'Age:', now - timestamp, 'ms');
           setContentData(prev => ({ ...prev, thumbnail: dataUrl }));
-          showToastMessage('Area captured successfully');
-          
-          // Clear the pending capture
+          showToastMessage('Area captured successfully', 'success');
           await chrome.storage.local.remove('pendingAreaCapture');
-          console.log('[Popup] Pending capture applied and cleared from storage');
         } else {
-          console.log('[Popup] Pending capture is too old, ignoring and removing...', 'Age:', now - timestamp, 'ms');
+          console.log('[Popup] Pending capture is too old, ignoring and removing...');
           await chrome.storage.local.remove('pendingAreaCapture');
         }
       } else {
-        console.log('[Popup] No pending area capture found in storage');
+        console.log('[Popup] No pending area capture or recent error found in storage');
       }
     } catch (error) {
       console.error('[Popup] Error checking for pending capture:', error);
+      showToastMessage('Error checking for pending items', 'error');
     }
   };
 
@@ -275,15 +290,18 @@ const App: React.FC = () => {
     setIsLoading(false);
   };
 
-  const showToastMessage = (message: string) => {
-    setToastMessage(message);
-    setShowToast(true);
-    setTimeout(() => setShowToast(false), 3000);
+  const showToastMessage = (message: string, type: 'success' | 'error' | 'warning' = 'success') => {
+    setToastDetails({ message, type, show: true });
+    setTimeout(() => setToastDetails(prev => ({ ...prev, show: false })), 4000); // Increased duration slightly
+  };
+
+  const closeToast = () => {
+    setToastDetails(prev => ({ ...prev, show: false }));
   };
 
   const saveToPostfolio = async () => {
     if (!authDetails.token || !authDetails.userId) {
-      showToastMessage(authDetails.error || 'Not logged in. Please log in to Postfolio and try again.');
+      showToastMessage(authDetails.error || 'Not logged in. Please log in to Postfolio and try again.', 'error');
       setIsLoading(false);
       return;
     }
@@ -293,19 +311,14 @@ const App: React.FC = () => {
     const postDataToSave = {
       url: contentData.url,
       title: contentData.title.trim(),
-      thumbnailUrl: contentData.thumbnail, // This can be a data URL or a direct image URL
+      thumbnailUrl: contentData.thumbnail,
       userId: authDetails.userId,
-      // categoryId: null, // Optional: Add if you have category selection in the extension
     };
 
     console.log('[Popup] Attempting to save post:', postDataToSave);
 
     try {
-      // Dynamic API endpoint based on environment
-      const isDevelopment = true; // Set to false for production build
-      const apiEndpoint = isDevelopment 
-        ? 'http://localhost:3001/api/posts' 
-        : 'https://www.mypostfolio.com/api/posts';
+      const apiEndpoint = `${WEB_APP_BASE_URL}/api/posts`;
       
       const response = await fetch(apiEndpoint, {
         method: 'POST',
@@ -320,7 +333,7 @@ const App: React.FC = () => {
         const result = await response.json();
         console.log('[Popup] Post saved successfully:', result);
         hideLoadingState();
-        showToastMessage('Successfully saved to Postfolio!');
+        showToastMessage('Successfully saved to Postfolio!', 'success');
         setTimeout(() => {
           window.close();
         }, 2000);
@@ -328,12 +341,12 @@ const App: React.FC = () => {
         const errorData = await response.json().catch(() => ({ error: 'Failed to save. Server error.' }));
         console.error('[Popup] Error saving post:', response.status, errorData);
         hideLoadingState();
-        showToastMessage(`Error: ${errorData.error || response.statusText || 'Could not save post.'}`);
+        showToastMessage(`Error: ${errorData.error || response.statusText || 'Could not save post.'}`, 'error');
       }
     } catch (error: any) {
       console.error('[Popup] Network or other error saving post:', error);
       hideLoadingState();
-      showToastMessage('Failed to save: ' + error.message);
+      showToastMessage('Failed to save: ' + error.message, 'error');
     }
   };
 
@@ -345,15 +358,16 @@ const App: React.FC = () => {
       const dataUrl = await chrome.tabs.captureVisibleTab({ format: 'png' });
       if (dataUrl) {
         setContentData(prev => ({ ...prev, thumbnail: dataUrl }));
-        showToastMessage('Visible area captured');
+        showToastMessage('Visible area captured', 'success');
       } else {
-        showToastMessage('Failed to capture visible area');
+        showToastMessage('Failed to capture visible area', 'error');
       }
     } catch (error) {
       console.error('Error capturing visible area:', error);
-      showToastMessage('Failed to capture visible area');
+      showToastMessage('Failed to capture visible area', 'error');
     } finally {
       hideLoadingState();
+      setActiveControl(null);
     }
   };
 
@@ -369,10 +383,11 @@ const App: React.FC = () => {
       reader.onload = (e) => {
         const result = e.target?.result as string;
         setContentData(prev => ({ ...prev, thumbnail: result }));
-        showToastMessage('Image uploaded successfully');
+        showToastMessage('Image uploaded successfully', 'success');
       };
       reader.readAsDataURL(file);
     }
+    setActiveControl(null);
   };
 
   const selectArea = async () => {
@@ -417,7 +432,7 @@ const App: React.FC = () => {
       
     } catch (error) {
       console.error('Error starting area selection:', error);
-      showToastMessage('Failed to start area selection: ' + (error instanceof Error ? error.message : 'Unknown error'));
+      showToastMessage('Failed to start area selection: ' + (error instanceof Error ? error.message : 'Unknown error'), 'error');
       setActiveControl(null);
       hideLoadingState();
     }
@@ -426,7 +441,8 @@ const App: React.FC = () => {
   const removeImage = () => {
     setActiveControl('remove');
     setContentData(prev => ({ ...prev, thumbnail: null }));
-    showToastMessage('Thumbnail removed');
+    showToastMessage('Thumbnail removed', 'success'); // Or 'warning' or a new 'info' type
+    setActiveControl(null);
   };
 
   const autoResizeTextarea = () => {
@@ -457,6 +473,38 @@ const App: React.FC = () => {
 
   const closeExtension = () => {
     window.close();
+  };
+
+  const handlePrimaryAction = () => {
+    if (authDetails.token && authDetails.userId) {
+      saveToPostfolio();
+    } else {
+      // Assumed not logged in, or error exists that implies login needed
+      if (contentData.url) {
+        chrome.storage.local.set({ postfolioReturnToUrl: contentData.url }, () => {
+          console.log('[Popup] Stored return URL:', contentData.url);
+          chrome.tabs.create({ url: `${WEB_APP_BASE_URL}${LOGIN_PAGE_PATH}` });
+          window.close();
+        });
+      } else {
+        // If there's no URL (e.g. new tab page), just open login
+        chrome.tabs.create({ url: `${WEB_APP_BASE_URL}${LOGIN_PAGE_PATH}` });
+        window.close();
+      }
+    }
+  };
+  
+  const primaryButtonText = () => {
+    if (authDetails.token && authDetails.userId) return 'Save To Postfolio';
+    return 'Login to Save';
+  };
+
+  const isPrimaryButtonDisabled = () => {
+    if (authDetails.token && authDetails.userId) {
+      return !contentData.title.trim(); // Disabled if no title when logged in
+    }
+    // Login button is never disabled if shown, unless maybe no URL? For now, always enabled.
+    return false; 
   };
 
   return (
@@ -513,9 +561,8 @@ const App: React.FC = () => {
                   onError={(e) => {
                     console.error('Thumbnail image failed to load:', contentData.thumbnail);
                     console.error('Image error event:', e);
-                    // Set thumbnail to null to show placeholder instead of broken image
                     setContentData(prev => ({ ...prev, thumbnail: null }));
-                    showToastMessage('Failed to load thumbnail image');
+                    showToastMessage('Failed to load thumbnail image', 'error');
                   }}
                   onLoad={() => {
                     console.log('Thumbnail image loaded successfully:', contentData.thumbnail);
@@ -620,13 +667,13 @@ const App: React.FC = () => {
         <div className="actions-section">
           <button 
             className="primary-action" 
-            onClick={saveToPostfolio}
-            disabled={!contentData.title.trim() || !authDetails.token || !!authDetails.error}
+            onClick={handlePrimaryAction}
+            disabled={isPrimaryButtonDisabled()}
           >
-             {authDetails.error ? 'Login Error' : (authDetails.token ? 'Save To Postfolio' : 'Login to Save')}
+             {primaryButtonText()}
           </button>
           
-          {(!contentData.title.trim() && authDetails.token) && (
+          {isPrimaryButtonDisabled() && authDetails.token && (
             <div className="validation-hint">
               Please enter a title to continue
             </div>
@@ -656,11 +703,38 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Success Toast */}
-      {showToast && (
-        <div className="success-toast show">
-          <div className="toast-icon">✓</div>
-          <span>{toastMessage}</span>
+      {/* Toast Notification */}
+      {toastDetails.show && (
+        <div className={`toast ${toastDetails.type} show`}>
+          <div className="toast-icon-container">
+            {toastDetails.type === 'success' && (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                <polyline points="22 4 12 14.01 9 11.01"></polyline>
+              </svg>
+            )}
+            {toastDetails.type === 'error' && (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="15" y1="9" x2="9" y2="15"></line>
+                <line x1="9" y1="9" x2="15" y2="15"></line>
+              </svg>
+            )}
+            {toastDetails.type === 'warning' && (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="8" x2="12" y2="12"></line>
+                <line x1="12" y1="16" x2="12.01" y2="16"></line>
+              </svg>
+            )}
+          </div>
+          <p className="toast-message">{toastDetails.message}</p>
+          <button className="toast-close-button" onClick={closeToast}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
         </div>
       )}
     </div>
