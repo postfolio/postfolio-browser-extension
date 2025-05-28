@@ -48,6 +48,8 @@ const App: React.FC = () => {
     thumbnail: null
   });
   const [authDetails, setAuthDetails] = useState<AuthDetails>({ userId: null, token: null, userEmail: null, error: null });
+  const [isSaved, setIsSaved] = useState(false);
+  const [savedPostTitle, setSavedPostTitle] = useState('');
 
   const titleInputRef = useRef<HTMLTextAreaElement>(null);
   const urlInputRef = useRef<HTMLInputElement>(null);
@@ -157,31 +159,31 @@ const App: React.FC = () => {
 
       if (initialUrl) {
         await fetchContentDetailsForUrl(initialUrl, activeTab);
-      } else {
+        } else {
          setContentData(prev => ({ ...prev, thumbnail: generateMockThumbnail("No page content detected") }));
-      }
-      
+        }
+    
       // Add a delay before checking for pending captures
-      setTimeout(() => {
-        checkForPendingCapture();
-      }, 200);
-      
-      // Listen for messages from background script
-      const messageListener = (message: any) => {
-        console.log('Popup received message:', message);
-        if (message.action === 'areaSelectionComplete') {
-          setContentData(prev => ({ ...prev, thumbnail: message.dataUrl }));
+    setTimeout(() => {
+      checkForPendingCapture();
+    }, 200);
+    
+    // Listen for messages from background script
+    const messageListener = (message: any) => {
+      console.log('Popup received message:', message);
+      if (message.action === 'areaSelectionComplete') {
+        setContentData(prev => ({ ...prev, thumbnail: message.dataUrl }));
           showToastMessage('Area captured successfully', 'success');
           setActiveControl(null); hideLoadingState();
-        } else if (message.action === 'areaSelectionError') {
+      } else if (message.action === 'areaSelectionError') {
           showToastMessage('Failed to capture area: ' + message.error, 'error');
           setActiveControl(null); hideLoadingState();
-        } else if (message.action === 'areaSelectionCancelled') {
+      } else if (message.action === 'areaSelectionCancelled') {
           showToastMessage('Area selection cancelled', 'warning');
           setActiveControl(null); hideLoadingState();
-        }
-      };
-      chrome.runtime.onMessage.addListener(messageListener);
+      }
+    };
+    chrome.runtime.onMessage.addListener(messageListener);
       return () => chrome.runtime.onMessage.removeListener(messageListener);
     };
 
@@ -333,10 +335,8 @@ const App: React.FC = () => {
         const result = await response.json();
         console.log('[Popup] Post saved successfully:', result);
         hideLoadingState();
-        showToastMessage('Successfully saved to Postfolio!', 'success');
-        setTimeout(() => {
-          window.close();
-        }, 2000);
+        setSavedPostTitle(postDataToSave.title);
+        setIsSaved(true);
       } else {
         const errorData = await response.json().catch(() => ({ error: 'Failed to save. Server error.' }));
         console.error('[Popup] Error saving post:', response.status, errorData);
@@ -506,6 +506,27 @@ const App: React.FC = () => {
     // Login button is never disabled if shown, unless maybe no URL? For now, always enabled.
     return false; 
   };
+
+  if (isSaved) {
+    return (
+      <div className="extension-wrapper saved-ui-wrapper">
+        <div className="saved-icon-container">
+          <svg className="saved-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+            <polyline points="22 4 12 14.01 9 11.01"></polyline>
+          </svg>
+        </div>
+        <h2 className="saved-title">Successfully Saved!</h2>
+        {savedPostTitle && <p className="saved-post-title">{savedPostTitle}</p>}
+        <button 
+          className="primary-action done-button"
+          onClick={() => window.close()}
+        >
+          Done
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="extension-wrapper">
@@ -703,17 +724,19 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Toast Notification */}
+      {/* Toast Notification Commented Out
       {toastDetails.show && (
         <div className={`toast ${toastDetails.type} show`}>
           <div className="toast-icon-container">
             {toastDetails.type === 'success' && (
+              // Using a checkmark similar to CircleCheck from lucide
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
                 <polyline points="22 4 12 14.01 9 11.01"></polyline>
               </svg>
             )}
             {toastDetails.type === 'error' && (
+              // Using an X similar to CircleX from lucide
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="10"></circle>
                 <line x1="15" y1="9" x2="9" y2="15"></line>
@@ -721,6 +744,7 @@ const App: React.FC = () => {
               </svg>
             )}
             {toastDetails.type === 'warning' && (
+              // Using an exclamation in a circle, similar to AlertTriangle or AlertCircle
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="10"></circle>
                 <line x1="12" y1="8" x2="12" y2="12"></line>
@@ -737,6 +761,7 @@ const App: React.FC = () => {
           </button>
         </div>
       )}
+      */}
     </div>
   );
 };

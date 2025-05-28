@@ -640,3 +640,46 @@ body {
 .toast {
   border-left: none;
 }
+
+/* Saved UI Screen */
+.saved-ui-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  text-align: center;
+  height: 100%; /* Ensure it takes full popup height if that's desired */
+}
+
+.saved-icon-container {
+  margin-bottom: 20px;
+}
+
+.saved-icon {
+  width: 64px;
+  height: 64px;
+  stroke: #22c55e; /* Green success color */
+  stroke-width: 1.5; /* Slightly thinner for a larger icon */
+}
+
+.saved-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: #111827;
+  margin-bottom: 8px;
+}
+
+.saved-post-title {
+  font-size: 14px;
+  color: #4b5563; /* Medium gray */
+  margin-bottom: 24px;
+  max-width: 90%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.done-button {
+  min-width: 120px; /* Give the button a decent size */
+}
