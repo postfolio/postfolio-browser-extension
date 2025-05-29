@@ -24,3 +24,6 @@ web-ext.config.ts
 *.njsproj
 *.sln
 *.sw?
+
+# Firebase config (contains sensitive API keys)
+firebase-config.ts

@@ -4,6 +4,7 @@ A modern browser extension that allows you to save web content to your Postfolio
 
 ## Features
 
+- **Direct Authentication**: Log in directly from the extension - no need to have Postfolio open
 - **Automatic Content Detection**: Automatically extracts page title and URL
 - **Thumbnail Options**: Multiple ways to capture thumbnails:
   - Auto-detection from current page
@@ -14,6 +15,7 @@ A modern browser extension that allows you to save web content to your Postfolio
 - **Context Menu Integration**: Right-click on any page to save to Postfolio
 - **Modern UI**: Clean, responsive interface matching your design specifications
 - **Real-time Preview**: See exactly what will be saved before confirming
+- **Secure Token Management**: Authentication tokens stored securely with automatic refresh
 
 ## Installation
 
@@ -30,12 +32,17 @@ A modern browser extension that allows you to save web content to your Postfolio
    npm install
    ```
 
-3. Build the extension:
+3. Configure Firebase:
+   - Copy `firebase-config.example.ts` to `firebase-config.ts`
+   - Fill in your Firebase project credentials from the Firebase Console
+   - These should match your Postfolio web app's Firebase configuration
+
+4. Build the extension:
    ```bash
    npm run build
    ```
 
-4. Load the extension in Chrome:
+5. Load the extension in Chrome:
    - Open Chrome and go to `chrome://extensions/`
    - Enable "Developer mode" in the top right
    - Click "Load unpacked"
@@ -45,6 +52,7 @@ A modern browser extension that allows you to save web content to your Postfolio
 
 For distribution:
 ```bash
+npm run build
 npm run zip
 ```
 
@@ -52,13 +60,20 @@ This creates a zip file in the `.output` directory ready for Chrome Web Store su
 
 ## Usage
 
-### Via Extension Icon
+### First Time Setup
+1. Click the Postfolio extension icon
+2. Log in with your Postfolio account credentials
+3. Your session will be remembered for future use
+
+### Saving Content
+
+#### Via Extension Icon
 1. Click the Postfolio extension icon in your browser toolbar
 2. The extension will automatically detect the current page content
 3. Customize the title, thumbnail, or other details if needed
 4. Click "Save to Postfolio"
 
-### Via Context Menu
+#### Via Context Menu
 1. Right-click anywhere on a webpage
 2. Select "Save to Postfolio" from the context menu
 3. The extension popup will open with the page content pre-filled
@@ -87,10 +102,13 @@ entrypoints/
 ├── popup/           # Extension popup UI
 │   ├── App.tsx      # Main React component
 │   ├── App.css      # Popup styles
+│   ├── Login.tsx    # Login component
 │   ├── main.tsx     # React entry point
 │   └── types.ts     # TypeScript types
+├── lib/
+│   └── firebase.ts  # Firebase authentication service
 ├── background.ts    # Background script
-└── content.ts       # Content script
+└── area-selector.content.ts  # Area selection content script
 
 public/
 └── icon/           # Extension icons
@@ -100,6 +118,7 @@ public/
 
 - **Framework**: WXT (Web Extension Tools)
 - **Frontend**: React + TypeScript
+- **Authentication**: Firebase Auth
 - **Build Tool**: Vite
 - **Styling**: CSS (custom design system)
 
@@ -108,9 +127,17 @@ public/
 - `chrome.tabs` - For accessing current tab information
 - `chrome.contextMenus` - For right-click context menu
 - `chrome.action` - For extension toolbar interaction
+- `chrome.storage.local` - For secure token storage
 - Screen Capture APIs - For thumbnail generation
 
 ## Features in Detail
+
+### Authentication
+- Direct Firebase authentication in the extension
+- Secure token storage in chrome.storage.local
+- Automatic token refresh before expiry
+- Session persistence across popup sessions
+- Easy logout functionality
 
 ### Auto-Detection
 The extension automatically:
@@ -154,9 +181,10 @@ The extension automatically:
 
 ## Roadmap
 
+- [x] Direct authentication without web app dependency
 - [x] Area selection tool for custom screenshots
 - [ ] Multiple collection support
 - [ ] Keyboard shortcuts
 - [ ] Dark mode theme
 - [ ] Bulk save functionality
-- [ ] Integration with Postfolio API
+- [ ] Social login options (Google, etc.)
