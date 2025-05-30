@@ -44,11 +44,10 @@ body {
 /* Header */
 .header {
   display: flex;
-  align-items: center;
   justify-content: space-between;
-  padding: 12px 20px;
-  border-bottom: 1px solid #f3f4f6;
-  background: #ffffff;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e5e7eb;
 }
 
 .brand {
@@ -295,6 +294,32 @@ body {
 /* Actions Section */
 .actions-section {
   margin-top: 10px;
+}
+
+/* Auth Alternatives */
+.auth-alternatives {
+  margin-top: 12px;
+  text-align: center;
+}
+
+.auth-text {
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.auth-link {
+  color: #016fb9;
+  font-weight: 500;
+  margin-left: 4px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+  transition: color 0.15s ease;
+}
+
+.auth-link:hover {
+  color: #0159a3;
 }
 
 /* Primary Action Button */
@@ -682,4 +707,50 @@ body {
 
 .done-button {
   min-width: 120px; /* Give the button a decent size */
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 8px;
+  padding-right: 8px;
+  border-right: 1px solid #e5e7eb;
+}
+
+.user-email {
+  font-size: 12px;
+  color: #6b7280;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logout-button {
+  background: none;
+  border: none;
+  color: #6b7280;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.logout-button:hover {
+  background-color: #f3f4f6;
+  color: #374151;
+}
+
+.logout-button:active {
+  background-color: #e5e7eb;
 }

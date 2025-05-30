@@ -190,6 +190,33 @@ const App: React.FC = () => {
     initialSetup();
   }, []);
   
+  // Periodically check for auth updates if not logged in
+  useEffect(() => {
+    if (!authDetails.token) {
+      const checkInterval = setInterval(async () => {
+        console.log('[Popup] Checking for auth updates...');
+        try {
+          const response = await chrome.runtime.sendMessage({ action: 'getAuthDetails' });
+          if (response && response.success && response.token) {
+            console.log('[Popup] Auth detected! User is now logged in.');
+            setAuthDetails({ 
+              userId: response.userId, 
+              token: response.token, 
+              userEmail: response.userEmail, 
+              error: null 
+            });
+            showToastMessage('Successfully logged in!', 'success');
+            clearInterval(checkInterval);
+          }
+        } catch (error) {
+          console.log('[Popup] Error checking auth:', error);
+        }
+      }, 2000); // Check every 2 seconds
+
+      return () => clearInterval(checkInterval);
+    }
+  }, [authDetails.token]);
+  
   useEffect(() => {
     // This effect runs when authDetails changes, especially after login.
     if (authDetails.token && authDetails.userId) { // User is logged in
@@ -475,23 +502,68 @@ const App: React.FC = () => {
     window.close();
   };
 
+  const handleLogout = async () => {
+    try {
+      // Clear stored auth token
+      await chrome.runtime.sendMessage({ action: 'clearAuthToken' });
+      
+      // Reset auth state
+      setAuthDetails({ userId: null, token: null, userEmail: null, error: null });
+      
+      showToastMessage('Logged out successfully', 'success');
+    } catch (error) {
+      console.error('Error logging out:', error);
+      showToastMessage('Failed to log out', 'error');
+    }
+  };
+
   const handlePrimaryAction = () => {
     if (authDetails.token && authDetails.userId) {
       saveToPostfolio();
     } else {
-      // Assumed not logged in, or error exists that implies login needed
+      // User not logged in, open login page
+      const loginUrl = `${WEB_APP_BASE_URL}/login`;
+      
+      // Store the current URL to return to after login (if any)
       if (contentData.url) {
         chrome.storage.local.set({ postfolioReturnToUrl: contentData.url }, () => {
           console.log('[Popup] Stored return URL:', contentData.url);
-          chrome.tabs.create({ url: `${WEB_APP_BASE_URL}${LOGIN_PAGE_PATH}` });
-          window.close();
         });
-      } else {
-        // If there's no URL (e.g. new tab page), just open login
-        chrome.tabs.create({ url: `${WEB_APP_BASE_URL}${LOGIN_PAGE_PATH}` });
-        window.close();
       }
+      
+      // Open login page in new tab
+      chrome.tabs.create({ url: loginUrl });
+      
+      // Show a message to the user
+      showToastMessage('Please log in to Postfolio. The extension will automatically detect when you are logged in.', 'warning');
+      
+      // Don't close the popup immediately - let user see the message
+      setTimeout(() => {
+        window.close();
+      }, 3000);
     }
+  };
+  
+  const handleSignUp = () => {
+    const signUpUrl = `${WEB_APP_BASE_URL}/sign-up`;
+    
+    // Store the current URL to return to after signup (if any)
+    if (contentData.url) {
+      chrome.storage.local.set({ postfolioReturnToUrl: contentData.url }, () => {
+        console.log('[Popup] Stored return URL for signup:', contentData.url);
+      });
+    }
+    
+    // Open signup page in new tab
+    chrome.tabs.create({ url: signUpUrl });
+    
+    // Show a message to the user
+    showToastMessage('Please sign up for Postfolio. The extension will automatically detect when you are logged in.', 'warning');
+    
+    // Don't close the popup immediately - let user see the message
+    setTimeout(() => {
+      window.close();
+    }, 3000);
   };
   
   const primaryButtonText = () => {
@@ -537,12 +609,30 @@ const App: React.FC = () => {
             <img src="/icon/postfolio-logo-blue.png" alt="Postfolio" className="brand-logo" />
           </div>
         </div>
-        <button className="close-button" onClick={closeExtension}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <line x1="18" y1="6" x2="6" y2="18"/>
-            <line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
-        </button>
+        <div className="header-actions">
+          {authDetails.token && authDetails.userEmail && (
+            <div className="user-info">
+              <span className="user-email">{authDetails.userEmail}</span>
+              <button 
+                className="logout-button" 
+                onClick={handleLogout}
+                title="Logout"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                  <polyline points="16 17 21 12 16 7"/>
+                  <line x1="21" y1="12" x2="9" y2="12"/>
+                </svg>
+              </button>
+            </div>
+          )}
+          <button className="close-button" onClick={closeExtension}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
       </div>
 
       {/* Main Content */}
@@ -694,14 +784,28 @@ const App: React.FC = () => {
              {primaryButtonText()}
           </button>
           
+          {!authDetails.token && (
+            <div className="auth-alternatives">
+              <p className="auth-text">
+                Don't have an account? 
+                <button 
+                  className="auth-link" 
+                  onClick={handleSignUp}
+                >
+                  Sign up
+                </button>
+              </p>
+            </div>
+          )}
+          
           {isPrimaryButtonDisabled() && authDetails.token && (
             <div className="validation-hint">
               Please enter a title to continue
             </div>
           )}
-          {authDetails.error && (
+          {authDetails.error && !authDetails.token && (
              <div className="validation-hint">
-              {authDetails.error}
+              Not logged in. Please log in to save posts.
             </div>
           )}
         </div>

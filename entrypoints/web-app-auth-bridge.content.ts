@@ -1,5 +1,5 @@
 export default defineContentScript({
-  matches: ['http://localhost:3001/*', 'https://www.mypostfolio.com/*', 'https://mypostfolio.com/*'], // Support localhost:3001 and production domains
+  matches: ['*://localhost/*', 'https://www.mypostfolio.com/*', 'https://mypostfolio.com/*'], // Allow any scheme for localhost
   main() {
     console.log('[AuthBridge] Content script loaded on:', window.location.href);
 
