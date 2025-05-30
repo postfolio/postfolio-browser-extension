@@ -17,12 +17,16 @@ export default defineBackground(() => {
   });
 
   // Helper function to check if a URL is a Postfolio URL
+  const POSTFOLIO_URLS = [
+    'http://localhost:3001',
+    'https://localhost:3001',
+    'https://www.mypostfolio.com',
+    'https://mypostfolio.com'
+  ];
+  
   const isPostfolioUrl = (url: string | undefined): boolean => {
     if (!url) return false;
-    return url.startsWith('http://localhost:3001') || 
-           url.startsWith('https://localhost:3001') ||
-           url.startsWith('https://www.mypostfolio.com') || 
-           url.startsWith('https://mypostfolio.com');
+    return POSTFOLIO_URLS.some(baseUrl => url.startsWith(baseUrl));
   };
 
   // Automatically fetch auth when on a Postfolio tab
@@ -64,7 +68,7 @@ export default defineBackground(() => {
   // Reusable function to store auth details
   const storeAuthDetailsInStorage = (token: string, userId: string, userEmail: string | null, source: string): Promise<{success: boolean, error?: string, message?: string}> => {
     return new Promise((resolve) => {
-      console.log(`[Background] storeAuthDetailsInStorage (from ${source}): Attempting to store:`, { tokenExists: !!token, userId, userEmail });
+      console.log(`[Background] storeAuthDetailsInStorage (from ${source}): Attempting to store auth for user:`, userId);
       chrome.storage.local.set({
         postfolioAuth: {
           token,
@@ -81,7 +85,7 @@ export default defineBackground(() => {
           const successMsg = `[Background] storeAuthDetailsInStorage (from ${source}): Auth token stored successfully in chrome.storage.local.`;
           console.log(successMsg);
           chrome.storage.local.get('postfolioAuth', (result) => {
-            console.log(`[Background] storeAuthDetailsInStorage (from ${source}): Verification read from storage:`, result);
+            console.log(`[Background] storeAuthDetailsInStorage (from ${source}): Auth verification complete`);
             resolve({ success: true, message: "Token stored and verified." });
           });
         }
@@ -126,9 +130,7 @@ export default defineBackground(() => {
       sendResponse({success: true, description: "Cancellation forwarded or logged"});
       return true;
     } else if (message.action === 'storeAuthToken') {
-      console.log('[Background] storeAuthToken: Matched action. Received data:', 
-        { tokenExists: !!message.token, userId: message.userId, userEmail: message.userEmail }
-      );
+      console.log('[Background] storeAuthToken: Matched action. Received auth for userId:', message.userId);
       
       if (!message.token || !message.userId) {
         const errorMsg = '[Background] storeAuthToken: Token or UserId missing in message. Cannot store.';
@@ -178,11 +180,11 @@ export default defineBackground(() => {
             });
             return;
           } else {
-            console.log('[Background] getAuthDetails: Stored auth token is EXPIRED. UserId was:', authData.userId, 'Clearing it.');
+            console.log('[Background] getAuthDetails: Stored auth token is EXPIRED. Clearing it.');
             chrome.storage.local.remove('postfolioAuth'); // Clear expired token
           }
         } else {
-          console.log('[Background] getAuthDetails: No valid authData (or token/userId) found in local storage.', result.postfolioAuth);
+          console.log('[Background] getAuthDetails: No valid authData found in local storage.');
         }
         
         console.log('[Background] getAuthDetails: No valid stored token, proceeding to check for open Postfolio tab...');
@@ -192,12 +194,7 @@ export default defineBackground(() => {
           console.log('[Background] getAuthDetails: Active tab found:', activeTab ? { id: activeTab.id, url: activeTab.url, title: activeTab.title } : 'No active tab');
           
           const isPostfolioTab = (tab: chrome.tabs.Tab) => {
-            return tab.url && (
-              tab.url.startsWith('http://localhost:3001') || 
-              tab.url.startsWith('https://localhost:3001') ||
-              tab.url.startsWith('https://www.mypostfolio.com') || 
-              tab.url.startsWith('https://mypostfolio.com')
-            );
+            return tab.url && isPostfolioUrl(tab.url);
           };
           
           const attemptFetchFromTab = (targetTab: chrome.tabs.Tab, source: string) => {
@@ -205,7 +202,7 @@ export default defineBackground(() => {
             chrome.tabs.sendMessage(targetTab.id!, { action: 'getFirebaseAuthTokenFromPage' })
               .then(response => {
                 if (response && response.success && response.token && response.userId) {
-                  console.log('[Background] getAuthDetails: Auth details received from content script:', { userId: response.userId, tokenPresent: !!response.token, userEmail: response.userEmail });
+                  console.log('[Background] getAuthDetails: Auth details received from content script for userId:', response.userId);
                   storeAuthDetailsInStorage(response.token, response.userId, response.userEmail, 'getAuthDetails-liveFetch')
                     .then(storeResult => {
                       if (storeResult.success) {

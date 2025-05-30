@@ -5,7 +5,7 @@ export default defineConfig({
   modules: ['@wxt-dev/module-react'],
   manifest: {
     name: "Save to Postfolio",
-    description: "Save web content to your Postfolio with ease.",
+    description: "Save and organize web content to your Postfolio library with one click",
     permissions: [
       "activeTab",
       "tabs",

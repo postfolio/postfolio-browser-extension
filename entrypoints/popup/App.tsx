@@ -20,7 +20,11 @@ interface AuthDetails {
   error?: string | null;
 }
 
-const WEB_APP_BASE_URL = import.meta.env.DEV
+// Check if we're in development mode by looking at the hostname
+const isDevelopment = typeof window !== 'undefined' && 
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+
+const WEB_APP_BASE_URL = isDevelopment
   ? 'http://localhost:3001'
   : 'https://www.mypostfolio.com';
 const LOGIN_PAGE_PATH = '/login'; // Or your actual login path e.g. /auth

@@ -1,5 +1,5 @@
 export default defineContentScript({
-  matches: ['*://localhost/*', 'https://www.mypostfolio.com/*', 'https://mypostfolio.com/*'], // Allow any scheme for localhost
+  matches: ['http://localhost:3001/*', 'https://www.mypostfolio.com/*', 'https://mypostfolio.com/*'],
   main() {
     console.log('[AuthBridge] Content script loaded on:', window.location.href);
 
@@ -23,7 +23,7 @@ export default defineContentScript({
               console.error('[AuthBridge] Error from page:', event.data.error);
               sendResponse({ success: false, error: event.data.error });
             } else {
-              console.log('[AuthBridge] Received auth details from page:', { userId: event.data.userId, token: event.data.token ? 'Token Present' : 'No Token' });
+              console.log('[AuthBridge] Received auth details from page for userId:', event.data.userId);
               sendResponse({ success: true, token: event.data.token, userId: event.data.userId, userEmail: event.data.userEmail });
             }
           }

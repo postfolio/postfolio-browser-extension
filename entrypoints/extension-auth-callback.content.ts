@@ -1,6 +1,5 @@
 export default defineContentScript({
   matches: [
-    '*://localhost:3001/extension-auth*',
     '*://localhost/extension-auth*',
     'https://www.mypostfolio.com/extension-auth*',
     'https://mypostfolio.com/extension-auth*'
