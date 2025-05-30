@@ -2,7 +2,7 @@
   "name": "postfolio-browser-extension",
   "description": "Save web content to your Postfolio with automatic content detection and screenshot capabilities",
   "private": true,
-  "version": "1.1.1",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "wxt",
@@ -16,8 +16,7 @@
   },
   "dependencies": {
     "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "firebase": "^10.7.1"
+    "react-dom": "^19.1.0"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.323",

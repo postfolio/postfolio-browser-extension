@@ -29,11 +29,6 @@ export default defineConfig({
       "32": "/icon/icon-32.png", 
       "48": "/icon/icon-48.png",
       "128": "/icon/icon-128.png"
-    },
-    content_security_policy: {
-      extension_pages: import.meta.env.DEV 
-        ? "script-src 'self' http://localhost:*; object-src 'self'; connect-src 'self' ws://localhost:* http://localhost:* https://*.firebaseapp.com https://*.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com;"
-        : "script-src 'self'; object-src 'self'; connect-src 'self' https://*.firebaseapp.com https://*.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com;"
     }
   }
 });

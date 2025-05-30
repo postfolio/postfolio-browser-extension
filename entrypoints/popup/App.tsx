@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 import { ContentData } from './types';
-import Login from './Login';
-import { getStoredAuthToken, refreshAuthToken, signOut } from '../lib/firebase';
 
 // Helper function to extract YouTube video ID from URL
 const getYoutubeVideoId = (url: string): string | null => {
@@ -25,6 +23,7 @@ interface AuthDetails {
 const WEB_APP_BASE_URL = import.meta.env.DEV
   ? 'http://localhost:3001'
   : 'https://www.mypostfolio.com';
+const LOGIN_PAGE_PATH = '/login'; // Or your actual login path e.g. /auth
 
 // Toast state and function
 interface ToastDetails {
@@ -51,13 +50,21 @@ const App: React.FC = () => {
   const [authDetails, setAuthDetails] = useState<AuthDetails>({ userId: null, token: null, userEmail: null, error: null });
   const [isSaved, setIsSaved] = useState(false);
   const [savedPostTitle, setSavedPostTitle] = useState('');
-  const [showLogin, setShowLogin] = useState(false);
-  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
 
   const titleInputRef = useRef<HTMLTextAreaElement>(null);
   const urlInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const isLoginError = (errMsg: string | undefined | null): boolean => {
+    if (!errMsg) return false;
+    const lowerMsg = errMsg.toLowerCase();
+    return lowerMsg.includes('not logged in') ||
+           lowerMsg.includes('login status not found') ||
+           lowerMsg.includes('ensure it is open and you are logged in') ||
+           lowerMsg.includes('postfolio tab not found') ||
+           lowerMsg.includes('could not retrieve login status');
+  };
+  
   const getPreferredImage = (images: any, baseUrl: string): string | null => {
     let preferredThumbnail = null;
     if (images) {
@@ -116,48 +123,24 @@ const App: React.FC = () => {
   useEffect(() => {
     const initialSetup = async () => {
       console.log('[Popup] Initial setup running...');
-      
-      // 1. Check for stored auth token
-      setIsCheckingAuth(true);
+      // 1. Fetch Auth Details
+      console.log('[Popup] Requesting auth details from background script...');
       try {
-        const storedAuth = await getStoredAuthToken();
-        
-        if (storedAuth && storedAuth.token && storedAuth.userId) {
-          console.log('[Popup] Found stored auth token');
-          
-          // Check if token needs refresh
-          if (storedAuth.needsRefresh) {
-            console.log('[Popup] Token needs refresh, refreshing...');
-            const newToken = await refreshAuthToken();
-            if (newToken) {
-              setAuthDetails({ 
-                userId: storedAuth.userId, 
-                token: newToken, 
-                userEmail: storedAuth.userEmail, 
-                error: null 
-              });
-            } else {
-              // Refresh failed, show login
-              setShowLogin(true);
-            }
-          } else {
-            // Token is still valid
-            setAuthDetails({ 
-              userId: storedAuth.userId, 
-              token: storedAuth.token, 
-              userEmail: storedAuth.userEmail, 
-              error: null 
-            });
-          }
+        const response = await chrome.runtime.sendMessage({ action: 'getAuthDetails' });
+        if (response && response.success) {
+          console.log('[Popup] Auth details received:', { userId: response.userId, tokenPresent: !!response.token, userEmail: response.userEmail });
+          setAuthDetails({ userId: response.userId, token: response.token, userEmail: response.userEmail, error: null });
         } else {
-          console.log('[Popup] No stored auth found, showing login');
-          setShowLogin(true);
+          console.error('[Popup] Failed to get auth details:', response?.error);
+          const errorMsg = response?.error || 'Could not retrieve login status. Please ensure you are logged into Postfolio in an active tab.';
+          setAuthDetails({ userId: null, token: null, userEmail: null, error: errorMsg });
+          showToastMessage(errorMsg, 'error'); // Display auth error as toast
         }
       } catch (err: any) {
-        console.error('[Popup] Error checking auth:', err);
-        setShowLogin(true);
-      } finally {
-        setIsCheckingAuth(false);
+        console.error('[Popup] Error fetching auth details:', err);
+        const errorMessage = 'Error connecting to Postfolio. Make sure it is open and you are logged in. (' + err.message + ')';
+        setAuthDetails({ userId: null, token: null, userEmail: null, error: errorMessage });
+        showToastMessage(errorMessage, 'error'); // Display connection error as toast
       }
 
       // 2. Initial content detection
@@ -176,40 +159,35 @@ const App: React.FC = () => {
 
       if (initialUrl) {
         await fetchContentDetailsForUrl(initialUrl, activeTab);
-      } else {
-        setContentData(prev => ({ ...prev, thumbnail: generateMockThumbnail("No page content detected") }));
-      }
+        } else {
+         setContentData(prev => ({ ...prev, thumbnail: generateMockThumbnail("No page content detected") }));
+        }
     
       // Add a delay before checking for pending captures
-      setTimeout(() => {
-        checkForPendingCapture();
-      }, 200);
-    };
+    setTimeout(() => {
+      checkForPendingCapture();
+    }, 200);
     
     // Listen for messages from background script
     const messageListener = (message: any) => {
       console.log('Popup received message:', message);
       if (message.action === 'areaSelectionComplete') {
         setContentData(prev => ({ ...prev, thumbnail: message.dataUrl }));
-        showToastMessage('Area captured successfully', 'success');
-        setActiveControl(null); 
-        hideLoadingState();
+          showToastMessage('Area captured successfully', 'success');
+          setActiveControl(null); hideLoadingState();
       } else if (message.action === 'areaSelectionError') {
-        showToastMessage('Failed to capture area: ' + message.error, 'error');
-        setActiveControl(null); 
-        hideLoadingState();
+          showToastMessage('Failed to capture area: ' + message.error, 'error');
+          setActiveControl(null); hideLoadingState();
       } else if (message.action === 'areaSelectionCancelled') {
-        showToastMessage('Area selection cancelled', 'warning');
-        setActiveControl(null); 
-        hideLoadingState();
+          showToastMessage('Area selection cancelled', 'warning');
+          setActiveControl(null); hideLoadingState();
       }
     };
-    
     chrome.runtime.onMessage.addListener(messageListener);
-    
+      return () => chrome.runtime.onMessage.removeListener(messageListener);
+    };
+
     initialSetup();
-    
-    return () => chrome.runtime.onMessage.removeListener(messageListener);
   }, []);
   
   useEffect(() => {
@@ -497,35 +475,22 @@ const App: React.FC = () => {
     window.close();
   };
 
-  const handleLoginSuccess = (authData: { userId: string; token: string; userEmail: string | null }) => {
-    setAuthDetails({
-      userId: authData.userId,
-      token: authData.token,
-      userEmail: authData.userEmail,
-      error: null
-    });
-    setShowLogin(false);
-    showToastMessage('Successfully logged in!', 'success');
-  };
-
-  const handleLogout = async () => {
-    try {
-      await signOut();
-      setAuthDetails({ userId: null, token: null, userEmail: null, error: null });
-      setShowLogin(true);
-      showToastMessage('Logged out successfully', 'success');
-    } catch (error) {
-      console.error('Logout error:', error);
-      showToastMessage('Error logging out', 'error');
-    }
-  };
-
   const handlePrimaryAction = () => {
     if (authDetails.token && authDetails.userId) {
       saveToPostfolio();
     } else {
-      // Show login form in extension instead of redirecting
-      setShowLogin(true);
+      // Assumed not logged in, or error exists that implies login needed
+      if (contentData.url) {
+        chrome.storage.local.set({ postfolioReturnToUrl: contentData.url }, () => {
+          console.log('[Popup] Stored return URL:', contentData.url);
+          chrome.tabs.create({ url: `${WEB_APP_BASE_URL}${LOGIN_PAGE_PATH}` });
+          window.close();
+        });
+      } else {
+        // If there's no URL (e.g. new tab page), just open login
+        chrome.tabs.create({ url: `${WEB_APP_BASE_URL}${LOGIN_PAGE_PATH}` });
+        window.close();
+      }
     }
   };
   
@@ -541,21 +506,6 @@ const App: React.FC = () => {
     // Login button is never disabled if shown, unless maybe no URL? For now, always enabled.
     return false; 
   };
-
-  if (isCheckingAuth) {
-    return (
-      <div className="extension-wrapper">
-        <div className="loading-overlay active">
-          <div className="loading-spinner"></div>
-          <div className="loading-text">Checking authentication...</div>
-        </div>
-      </div>
-    );
-  }
-
-  if (showLogin) {
-    return <Login onLoginSuccess={handleLoginSuccess} onError={showToastMessage} />;
-  }
 
   if (isSaved) {
     return (
@@ -597,16 +547,6 @@ const App: React.FC = () => {
 
       {/* Main Content */}
       <div className="main-content">
-        {/* User Info */}
-        {authDetails.userEmail && (
-          <div className="user-info">
-            <span className="user-email">{authDetails.userEmail}</span>
-            <button className="logout-button" onClick={handleLogout}>
-              Logout
-            </button>
-          </div>
-        )}
-        
         {/* Title Section */}
         <div className="form-section">
           <label className="form-label">
@@ -784,7 +724,7 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Toast Notification */}
+      {/* Toast Notification Commented Out
       {toastDetails.show && (
         <div className={`toast ${toastDetails.type} show`}>
           <div className="toast-icon-container">
@@ -821,6 +761,7 @@ const App: React.FC = () => {
           </button>
         </div>
       )}
+      */}
     </div>
   );
 };
