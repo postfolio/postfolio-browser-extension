@@ -11,7 +11,6 @@ export default defineConfig({
       "tabs",
       "storage",
       "contextMenus",
-      "scripting",
       "notifications"
     ],
     action: {
