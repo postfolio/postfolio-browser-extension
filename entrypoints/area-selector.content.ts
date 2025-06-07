@@ -234,18 +234,16 @@ export default defineContentScript({
         const devicePixelRatio = window.devicePixelRatio || 1;
         console.log('Device pixel ratio:', devicePixelRatio);
         
-        // The rect.x and rect.y are from getBoundingClientRect() of the selectionBox,
-        // which is relative to the viewport of the frame where this script runs.
-        // Since startAreaSelection is guarded by (window.top === window.self),
-        // this script instance is running in the top frame, so rect.x/y are already main-page relative.
+        // The rect.x and rect.y are from getBoundingClientRect() and are in CSS pixels.
+        // The debugger API expects coordinates in CSS pixels, so we no longer multiply by DPR here.
         const captureParams = {
-          x: Math.round(rect.x * devicePixelRatio),
-          y: Math.round(rect.y * devicePixelRatio),
-          width: Math.round(rect.width * devicePixelRatio),
-          height: Math.round(rect.height * devicePixelRatio)
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height
         };
 
-        console.log('[AreaSelector] Calculated capture params for background script:', captureParams);
+        console.log('[AreaSelector] Calculated CSS pixel capture params for background script:', captureParams);
         
         // First, test if background script is reachable
         try {

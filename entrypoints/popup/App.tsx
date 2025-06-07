@@ -13,6 +13,36 @@ const getYoutubeVideoId = (url: string): string | null => {
   return null;
 };
 
+// New helper function to resize image
+const resizeImage = (dataUrl: string, maxWidth: number, quality: number): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const a = img.width / img.height;
+      const w = Math.min(img.width, maxWidth);
+      const h = w / a;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        return reject(new Error('Failed to get canvas context'));
+      }
+      
+      ctx.drawImage(img, 0, 0, w, h);
+      
+      const resizedDataUrl = canvas.toDataURL('image/jpeg', quality);
+      resolve(resizedDataUrl);
+    };
+    img.onerror = () => {
+      reject(new Error('Image failed to load for resizing.'));
+    };
+    img.src = dataUrl;
+  });
+};
+
 interface AuthDetails {
   userId: string | null;
   token: string | null;
@@ -341,10 +371,26 @@ const App: React.FC = () => {
 
     showLoadingState('Saving to Postfolio...');
 
+    let thumbnailUrlToSave = contentData.thumbnail;
+
+    // Check if we have a large data URL to resize
+    if (thumbnailUrlToSave && thumbnailUrlToSave.startsWith('data:image/')) {
+        try {
+            showLoadingState('Compressing image...');
+            const resized = await resizeImage(thumbnailUrlToSave, 1280, 0.9);
+            console.log(`[Popup] Image resized from ${Math.round(thumbnailUrlToSave.length / 1024)}KB to ${Math.round(resized.length / 1024)}KB`);
+            thumbnailUrlToSave = resized;
+            showLoadingState('Saving to Postfolio...'); // Reset loading text
+        } catch (error) {
+            console.error('[Popup] Failed to resize image, sending original.', error);
+            showToastMessage('Could not compress image, saving may be slow.', 'warning');
+        }
+    }
+
     const postDataToSave = {
       url: contentData.url,
       title: contentData.title.trim(),
-      thumbnailUrl: contentData.thumbnail,
+      thumbnailUrl: thumbnailUrlToSave,
       userId: authDetails.userId,
     };
 

@@ -11,7 +11,8 @@ export default defineConfig({
       "tabs",
       "storage",
       "contextMenus",
-      "notifications"
+      "notifications",
+      "debugger"
     ],
     action: {
       default_title: "Save to Postfolio",
