@@ -254,40 +254,6 @@ export default defineBackground(() => {
     return true; 
   });
 
-  // Helper to promisify debugger APIs to use with async/await
-  function sendDebuggerCommand(tabId: number, method: string, params?: { [key: string]: any }): Promise<any> {
-    return new Promise((resolve, reject) => {
-      chrome.debugger.sendCommand({ tabId }, method, params, (result) => {
-        if (chrome.runtime.lastError) {
-          return reject(chrome.runtime.lastError);
-        }
-        resolve(result);
-      });
-    });
-  }
-  
-  // Helper to promisify attaching the debugger
-  function attachDebugger(tabId: number): Promise<void> {
-    return new Promise((resolve, reject) => {
-      chrome.debugger.attach({ tabId }, '1.3', () => {
-        if (chrome.runtime.lastError) {
-          return reject(chrome.runtime.lastError);
-        }
-        resolve();
-      });
-    });
-  }
-  
-  // Helper to promisify detaching the debugger
-  function detachDebugger(tabId: number): Promise<void> {
-    return new Promise((resolve) => {
-      chrome.debugger.detach({ tabId }, () => {
-        // We can ignore the lastError here, as it might throw an error if the tab was closed.
-        resolve();
-      });
-    });
-  }
-
   async function handleAreaCapture(rect: {x: number, y: number, width: number, height: number}, devicePixelRatio: number, tabId?: number) {
     if (!tabId) {
       console.error('[Background] handleAreaCapture called without a tabId.');
@@ -295,90 +261,69 @@ export default defineBackground(() => {
     }
 
     try {
-      await attachDebugger(tabId);
-    } catch (err: any) {
-      console.warn('[Background] Debugger attach failed, initiating fallback capture:', err.message);
-      // This is the fallback logic. If the debugger fails to attach (e.g. DevTools is open),
-      // we capture the visible tab and send it to the popup to be cropped.
-      try {
-        const fallbackDataUrl = await chrome.tabs.captureVisibleTab(tabId, { format: 'png' });
-        // We're now sending a different action to the popup to handle this specific case.
-        chrome.runtime.sendMessage({ 
-          action: 'areaSelectionFallback', 
-          dataUrl: fallbackDataUrl, 
-          rect: rect,
-          devicePixelRatio: devicePixelRatio 
-        });
-        // We still need to open the popup if it was closed
-        await chrome.action.openPopup().catch(() => {
-          // Store it in case the popup can't be opened right away.
-          // This ensures the capture isn't lost.
-           chrome.storage.local.set({
-            'pendingAreaFallback': { 
-              dataUrl: fallbackDataUrl,
-              rect: rect,
-              devicePixelRatio: devicePixelRatio,
-              timestamp: Date.now() 
-            }
-          });
-        });
-      } catch (fallbackError) {
-        console.error('[Background] Fallback capture also failed:', fallbackError);
-        const errorMessage = fallbackError instanceof Error ? fallbackError.message : 'Unknown fallback error';
-         chrome.runtime.sendMessage({
-          action: 'areaSelectionError',
-          error: errorMessage
-        }).catch(() => {});
-      }
-      return; // Stop execution since we've initiated the fallback
-    }
+      console.log('[Background] Capturing visible tab for area selection...');
+      // This captures ONLY the visible part of the tab. The rect from the content script is viewport-relative.
+      const dataUrl = await chrome.tabs.captureVisibleTab({ format: 'png' });
 
-    try {
-      // The debugger API takes coordinates in CSS pixels, which is what we now receive from the content script.
-      // The `captureBeyondViewport` flag is crucial for capturing off-screen content.
-      const result = await sendDebuggerCommand(tabId, 'Page.captureScreenshot', {
-        format: 'png',
-        captureBeyondViewport: true,
-        clip: {
-          x: rect.x,
-          y: rect.y,
-          width: rect.width,
-          height: rect.height,
-          scale: 1, // We are providing coordinates in CSS pixels.
+      if (!dataUrl) {
+        throw new Error('captureVisibleTab returned no data.');
+      }
+
+      console.log('[Background] Visible tab captured, cropping image in background...');
+      const imageBitmap = await createImageBitmap(await (await fetch(dataUrl)).blob());
+
+      // Use devicePixelRatio to correctly crop from the high-resolution screenshot
+      const canvas = new OffscreenCanvas(rect.width * devicePixelRatio, rect.height * devicePixelRatio);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { throw new Error('Failed to get OffscreenCanvas context'); }
+
+      ctx.drawImage(
+        imageBitmap,
+        rect.x * devicePixelRatio, // sourceX from top-left of visible area
+        rect.y * devicePixelRatio, // sourceY from top-left of visible area
+        rect.width * devicePixelRatio, // sourceWidth
+        rect.height * devicePixelRatio, // sourceHeight
+        0, 0, // destinationX, destinationY
+        rect.width * devicePixelRatio, // destinationWidth
+        rect.height * devicePixelRatio  // destinationHeight
+      );
+
+      const blob = await canvas.convertToBlob({ type: 'image/png' });
+      
+      const croppedDataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+      
+      console.log('[Background] Cropping successful. Data URL length:', croppedDataUrl.length);
+
+      await chrome.storage.local.set({
+        'pendingAreaCapture': { dataUrl: croppedDataUrl, timestamp: Date.now() }
+      });
+      
+      console.log('[Background] Attempting to send areaSelectionComplete message to popup...');
+      chrome.runtime.sendMessage({
+        action: 'areaSelectionComplete',
+        dataUrl: croppedDataUrl
+      }).catch(async () => {
+        console.log('[Background] Popup was not open, opening it to show result...');
+        try {
+          await chrome.action.openPopup();
+        } catch (popupError) {
+          console.error('[Background] Failed to open popup automatically:', popupError);
+          chrome.notifications.create({
+            type: 'basic',
+            iconUrl: '/icon/icon-48.png',
+            title: 'Area Captured',
+            message: 'Click the extension icon to see your captured area.'
+          });
         }
       });
 
-      if (result && result.data) {
-        const croppedDataUrl = 'data:image/png;base64,' + result.data;
-        console.log('[Background] Full-page area capture successful. Data URL length:', croppedDataUrl.length);
-
-        await chrome.storage.local.set({
-          'pendingAreaCapture': { dataUrl: croppedDataUrl, timestamp: Date.now() }
-        });
-        
-        console.log('[Background] Attempting to send areaSelectionComplete message to popup...');
-        chrome.runtime.sendMessage({
-          action: 'areaSelectionComplete',
-          dataUrl: croppedDataUrl
-        }).catch(async (error) => {
-          console.log('[Background] Popup was not open, opening it to show result...');
-          try {
-            await chrome.action.openPopup();
-          } catch (popupError) {
-            console.error('Failed to open popup automatically:', popupError);
-            chrome.notifications.create({
-              type: 'basic',
-              iconUrl: '/icon/icon-48.png',
-              title: 'Area Captured',
-              message: 'Click the extension icon to see your captured area.'
-            });
-          }
-        });
-      } else {
-        throw new Error('Capture command returned no data.');
-      }
     } catch (error) {
-      console.error('[Background] Error during handleAreaCapture with debugger:', error);
+      console.error('[Background] Error during handleAreaCapture:', error);
       const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred during capture.';
       
       await chrome.storage.local.set({
@@ -392,12 +337,9 @@ export default defineBackground(() => {
         try {
           await chrome.action.openPopup();
         } catch (popupError) {
-          console.error('Failed to open popup for error:', popupError);
+          console.error('[Background] Failed to open popup for error:', popupError);
         }
       });
-    } finally {
-      // Ensure the debugger is always detached.
-      await detachDebugger(tabId);
     }
   }
 });
