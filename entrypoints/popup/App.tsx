@@ -215,6 +215,22 @@ const App: React.FC = () => {
       } else if (message.action === 'areaSelectionCancelled') {
           showToastMessage('Area selection cancelled', 'warning');
           setActiveControl(null); hideLoadingState();
+      } else if (message.action === 'areaSelectionFallback') {
+        showLoadingState('Processing fallback capture...');
+        cropImage(message.dataUrl, message.rect, message.devicePixelRatio)
+          .then(croppedDataUrl => {
+            setContentData(prev => ({ ...prev, thumbnail: croppedDataUrl }));
+            showToastMessage('Area captured', 'success'); // Success for user
+          })
+          .catch(err => {
+            console.error('[Popup] Could not crop fallback image:', err);
+            showToastMessage('Failed to crop image, showing visible area.', 'error');
+            setContentData(prev => ({ ...prev, thumbnail: message.dataUrl }));
+          })
+          .finally(() => {
+            hideLoadingState();
+            setActiveControl(null);
+          });
       }
     };
     chrome.runtime.onMessage.addListener(messageListener);
@@ -289,25 +305,84 @@ const App: React.FC = () => {
   }, [authDetails.token, authDetails.userId]); // Runs when login status changes
 
 
+  const cropImage = (
+    dataUrl: string, 
+    rect: { x: number, y: number, width: number, height: number },
+    devicePixelRatio: number
+  ): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const dpr = devicePixelRatio || window.devicePixelRatio || 1;
+        
+        const canvas = document.createElement('canvas');
+        // Set canvas dimensions to the final desired size (in CSS pixels, but drawn with high-res data)
+        canvas.width = rect.width;
+        canvas.height = rect.height;
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          return reject(new Error('Failed to get canvas context for cropping'));
+        }
+        
+        // sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight
+        // Crop the source image (img) at high resolution and draw it onto the smaller canvas
+        ctx.drawImage(
+          img,
+          rect.x * dpr,
+          rect.y * dpr,
+          rect.width * dpr,
+          rect.height * dpr,
+          0,
+          0,
+          canvas.width, // Draw it to fit the final canvas size
+          canvas.height
+        );
+        
+        // Getting the data URL from the canvas that has the final, correct dimensions
+        resolve(canvas.toDataURL('image/png'));
+      };
+      img.onerror = (err) => {
+        console.error("Image load error for cropping", err);
+        reject(new Error('Image failed to load for cropping.'));
+      };
+      img.src = dataUrl;
+    });
+  };
+
   const checkForPendingCapture = async () => {
     try {
-      console.log('[Popup] Checking for pending area capture...');
-      const result = await chrome.storage.local.get(['pendingAreaCapture', 'pendingAreaError']);
+      console.log('[Popup] Checking for pending items...');
+      const result = await chrome.storage.local.get(['pendingAreaCapture', 'pendingAreaError', 'pendingAreaFallback']);
       
+      // Clear old error messages if they exist
       if (result.pendingAreaError) {
-        const { error, timestamp } = result.pendingAreaError;
-        const now = Date.now();
-        if (now - timestamp < 30000) { // Only show recent errors
-          console.log('[Popup] Found pending area error:', error);
-          showToastMessage('Failed to capture area: ' + error, 'error');
-          await chrome.storage.local.remove('pendingAreaError');
-          return; // Prioritize showing error over a potentially stale capture
-        } else {
-          console.log('[Popup] Pending area error is too old, removing...');
-          await chrome.storage.local.remove('pendingAreaError');
-        }
+        await chrome.storage.local.remove('pendingAreaError');
       }
       
+      if (result.pendingAreaFallback) {
+        const { dataUrl, rect, devicePixelRatio, timestamp } = result.pendingAreaFallback;
+        if (Date.now() - timestamp < 30000) {
+          console.log('[Popup] Found pending fallback capture, applying...');
+          showLoadingState('Cropping image...');
+          try {
+            const croppedUrl = await cropImage(dataUrl, rect, devicePixelRatio);
+            setContentData(prev => ({ ...prev, thumbnail: croppedUrl }));
+            showToastMessage('Area captured successfully', 'success');
+          } catch (e) {
+             console.error('[Popup] Failed to process pending fallback crop:', e);
+             showToastMessage('Failed to crop captured area', 'error');
+             setContentData(prev => ({ ...prev, thumbnail: dataUrl })); // Show uncropped as last resort
+          } finally {
+            hideLoadingState();
+            await chrome.storage.local.remove('pendingAreaFallback');
+          }
+          return; // Prioritize fallback over regular capture
+        } else {
+           await chrome.storage.local.remove('pendingAreaFallback');
+        }
+      }
+
       if (result.pendingAreaCapture) {
         const { dataUrl, timestamp } = result.pendingAreaCapture;
         const now = Date.now();
@@ -321,7 +396,7 @@ const App: React.FC = () => {
           await chrome.storage.local.remove('pendingAreaCapture');
         }
       } else {
-        console.log('[Popup] No pending area capture or recent error found in storage');
+        console.log('[Popup] No pending capture or recent error found in storage');
       }
     } catch (error) {
       console.error('[Popup] Error checking for pending capture:', error);

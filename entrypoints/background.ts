@@ -297,14 +297,40 @@ export default defineBackground(() => {
     try {
       await attachDebugger(tabId);
     } catch (err: any) {
-      console.error('[Background] Failed to attach debugger:', err);
-      const errorMessage = err.message?.includes('another debugger')
-        ? 'Cannot capture with browser DevTools open. Please close them and try again.'
-        : `Failed to start screenshot tool: ${err.message}`;
-      
-      await chrome.storage.local.set({ 'pendingAreaError': { error: errorMessage, timestamp: Date.now() } });
-      await chrome.action.openPopup().catch(() => {});
-      return;
+      console.warn('[Background] Debugger attach failed, initiating fallback capture:', err.message);
+      // This is the fallback logic. If the debugger fails to attach (e.g. DevTools is open),
+      // we capture the visible tab and send it to the popup to be cropped.
+      try {
+        const fallbackDataUrl = await chrome.tabs.captureVisibleTab(tabId, { format: 'png' });
+        // We're now sending a different action to the popup to handle this specific case.
+        chrome.runtime.sendMessage({ 
+          action: 'areaSelectionFallback', 
+          dataUrl: fallbackDataUrl, 
+          rect: rect,
+          devicePixelRatio: devicePixelRatio 
+        });
+        // We still need to open the popup if it was closed
+        await chrome.action.openPopup().catch(() => {
+          // Store it in case the popup can't be opened right away.
+          // This ensures the capture isn't lost.
+           chrome.storage.local.set({
+            'pendingAreaFallback': { 
+              dataUrl: fallbackDataUrl,
+              rect: rect,
+              devicePixelRatio: devicePixelRatio,
+              timestamp: Date.now() 
+            }
+          });
+        });
+      } catch (fallbackError) {
+        console.error('[Background] Fallback capture also failed:', fallbackError);
+        const errorMessage = fallbackError instanceof Error ? fallbackError.message : 'Unknown fallback error';
+         chrome.runtime.sendMessage({
+          action: 'areaSelectionError',
+          error: errorMessage
+        }).catch(() => {});
+      }
+      return; // Stop execution since we've initiated the fallback
     }
 
     try {
